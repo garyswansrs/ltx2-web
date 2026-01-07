@@ -29,20 +29,14 @@ fi
 # Check if LTX-2 pipelines are installed
 if ! python -c "import ltx_pipelines" 2>/dev/null; then
     echo
-    echo "LTX-2 pipelines not found. Installing automatically..."
+    echo "LTX-2 pipelines not found. Installing from local packages..."
     echo
     
-    # Clone LTX-2 repository if not exists
-    if [ ! -d "LTX-2" ]; then
-        echo "Cloning LTX-2 repository..."
-        git clone https://github.com/Lightricks/LTX-2.git
-    fi
-    
-    # Install ltx-core
+    # Install ltx-core from local directory (already included)
     echo "Installing ltx-core..."
     pip install -e LTX-2/packages/ltx-core
     
-    # Install ltx-pipelines
+    # Install ltx-pipelines from local directory (already included)
     echo "Installing ltx-pipelines..."
     pip install -e LTX-2/packages/ltx-pipelines
     
@@ -74,21 +68,21 @@ if [ "$GEMMA_OK" = false ]; then
     echo "  Gemma 3 12B FP8 text encoder is REQUIRED for LTX-2"
     echo "================================================"
     echo
-    echo "⚠️  LTX-2 requires Gemma 3 12B (pytorch/gemma-3-12b-it-FP8)"
+    echo "⚠️  LTX-2 requires Gemma 3 12B (MISHANM/google-gemma-3-12b-it-fp8)"
     echo "   Gemma 2 and Gemma 3 4B are NOT compatible!"
     echo "   Using PyTorch FP8 version - no HF token required!"
     echo
     
     mkdir -p models/gemma
     
-    echo "Downloading pytorch/gemma-3-12b-it-FP8 (this may take a while - ~13GB)..."
-    huggingface-cli download pytorch/gemma-3-12b-it-FP8 --local-dir ./models/gemma && {
+    echo "Downloading MISHANM/google-gemma-3-12b-it-fp8 (this may take a while - ~13GB)..."
+    huggingface-cli download MISHANM/google-gemma-3-12b-it-fp8 --local-dir ./models/gemma && {
         echo
         echo "✅ Gemma 3 12B FP8 downloaded successfully!"
     } || {
         echo
         echo "❌ Download failed. Please try manually:"
-        echo "   huggingface-cli download pytorch/gemma-3-12b-it-FP8 --local-dir ./models/gemma"
+        echo "   huggingface-cli download MISHANM/google-gemma-3-12b-it-fp8 --local-dir ./models/gemma"
     }
 fi
 

@@ -31,7 +31,8 @@ opencv-python>=4.8.0
 safetensors>=0.4.0
 numpy>=1.26.0
 tqdm>=4.66.0
-
+compressed-tensors
+bitsandbytes
 # For optimized memory allocation
 # Set PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 

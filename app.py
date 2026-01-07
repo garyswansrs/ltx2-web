@@ -568,6 +568,8 @@ def get_upscaler_choices() -> List[str]:
 
 
 # Global pipeline cache - keeps models in VRAM between generations
+# The underlying ModelLedger also caches individual models (transformer, VAE, etc.)
+# for even faster subsequent runs within the same pipeline configuration
 _pipeline_cache = {
     "pipeline": None,
     "pipeline_type": None,
@@ -577,6 +579,75 @@ _pipeline_cache = {
     "distilled_lora_path": None,
     "enable_fp8": None,
 }
+
+
+def clear_vram_cache() -> str:
+    """Clear all cached models from VRAM."""
+    global _pipeline_cache
+    
+    try:
+        # Get VRAM usage before clearing
+        if torch.cuda.is_available():
+            vram_before = torch.cuda.memory_allocated() / (1024 ** 3)
+        else:
+            vram_before = 0
+        
+        # Clear the pipeline cache
+        if _pipeline_cache["pipeline"] is not None:
+            # Clear ModelLedger cache(s) if the pipeline has them
+            pipeline = _pipeline_cache["pipeline"]
+            if hasattr(pipeline, 'model_ledger'):
+                pipeline.model_ledger.clear_cache()
+            # For two-stage pipelines with multiple ledgers
+            if hasattr(pipeline, 'stage_1_model_ledger'):
+                pipeline.stage_1_model_ledger.clear_cache()
+            if hasattr(pipeline, 'stage_2_model_ledger'):
+                pipeline.stage_2_model_ledger.clear_cache()
+        
+        # Clear the pipeline reference
+        _pipeline_cache["pipeline"] = None
+        _pipeline_cache["pipeline_type"] = None
+        _pipeline_cache["checkpoint_path"] = None
+        _pipeline_cache["spatial_upsampler_path"] = None
+        _pipeline_cache["gemma_path"] = None
+        _pipeline_cache["distilled_lora_path"] = None
+        _pipeline_cache["enable_fp8"] = None
+        
+        # Force garbage collection
+        import gc
+        gc.collect()
+        
+        # Clear CUDA cache
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+            torch.cuda.synchronize()
+            vram_after = torch.cuda.memory_allocated() / (1024 ** 3)
+            freed = vram_before - vram_after
+            return f"✅ VRAM cache cleared!\n\n📊 Freed: {freed:.2f} GB\n💾 Current usage: {vram_after:.2f} GB"
+        else:
+            return "✅ Cache cleared (no CUDA device detected)"
+            
+    except Exception as e:
+        return f"❌ Error clearing cache: {str(e)}"
+
+
+def get_vram_status() -> str:
+    """Get current VRAM usage status."""
+    if not torch.cuda.is_available():
+        return "No CUDA device detected"
+    
+    allocated = torch.cuda.memory_allocated() / (1024 ** 3)
+    reserved = torch.cuda.memory_reserved() / (1024 ** 3)
+    total = torch.cuda.get_device_properties(0).total_memory / (1024 ** 3)
+    
+    # Check if pipeline is cached
+    pipeline_status = "🟢 Pipeline cached" if _pipeline_cache["pipeline"] is not None else "⚪ No pipeline loaded"
+    
+    return f"""**VRAM Status:**
+- Allocated: {allocated:.2f} GB
+- Reserved: {reserved:.2f} GB  
+- Total: {total:.1f} GB
+- {pipeline_status}"""
 
 
 def get_cached_pipeline(
@@ -607,6 +678,7 @@ def get_cached_pipeline(
     
     if cache_valid:
         progress(0.1, desc="Using cached pipeline (models already in VRAM)...")
+        # Models are also cached in ModelLedger, making repeated generations instant
         return _pipeline_cache["pipeline"], None
     
     # Clear old pipeline to free VRAM before loading new one
@@ -924,7 +996,7 @@ Then set the "Gemma Path" to `./models/gemma` in the Generate tab.
         progress(1.0, desc="Complete!")
         
         if output_path.exists():
-            return str(output_path), f"✅ Video generated successfully!\nSaved to: {output_path}\n\n💡 Tip: Same settings = instant next generation (models cached in VRAM)"
+            return str(output_path), f"✅ Video generated successfully!\nSaved to: {output_path}\n\n💡 Tip: Models are cached in VRAM - subsequent generations are significantly faster!"
         else:
             return None, "❌ Video generation completed but output file not found"
             
@@ -1318,6 +1390,34 @@ def create_ui():
                     outputs_dir_input = gr.Textbox(
                         value=str(OUTPUTS_DIR),
                         label="Outputs Directory"
+                    )
+                
+                with gr.Group():
+                    gr.Markdown("#### 🧠 VRAM Management")
+                    gr.Markdown("""
+                    Models are cached in VRAM for faster subsequent generations.
+                    Use the button below to clear the cache and free VRAM.
+                    """)
+                    
+                    vram_status = gr.Markdown(value=get_vram_status())
+                    
+                    with gr.Row():
+                        clear_vram_btn = gr.Button("🗑️ Clear VRAM Cache", variant="secondary")
+                        refresh_vram_btn = gr.Button("🔄 Refresh Status", variant="secondary")
+                    
+                    clear_vram_result = gr.Markdown("")
+                    
+                    clear_vram_btn.click(
+                        clear_vram_cache,
+                        outputs=[clear_vram_result]
+                    ).then(
+                        get_vram_status,
+                        outputs=[vram_status]
+                    )
+                    
+                    refresh_vram_btn.click(
+                        get_vram_status,
+                        outputs=[vram_status]
                     )
                 
                 with gr.Group():
