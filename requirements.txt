@@ -1,0 +1,37 @@
+# LTX-2 WebUI Requirements
+# Requires Python >= 3.12 and CUDA >= 12.7
+# PyTorch ~= 2.7
+
+# Core dependencies
+torch>=2.7.0
+torchvision>=0.22.0
+torchaudio>=2.7.0
+
+# LTX-2 packages (must install from repository)
+# git clone https://github.com/Lightricks/LTX-2.git
+# cd LTX-2
+# uv sync --frozen
+# OR:
+# pip install -e packages/ltx-core
+# pip install -e packages/ltx-pipelines
+
+# Web UI
+gradio>=4.44.0
+
+# Model downloading
+huggingface-hub>=0.26.0
+
+# Media processing
+Pillow>=10.0.0
+imageio>=2.31.0
+imageio-ffmpeg>=0.4.9
+opencv-python>=4.8.0
+
+# Utilities
+safetensors>=0.4.0
+numpy>=1.26.0
+tqdm>=4.66.0
+
+# For optimized memory allocation
+# Set PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+
