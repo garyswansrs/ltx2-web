@@ -71,16 +71,22 @@ import sys
 class OutputCapture:
     """Capture stdout/stderr and parse tqdm progress for SSE streaming.
     
-    For distilled pipeline, the stages are:
-    - Stage 1: Denoising at half resolution (8 steps with DISTILLED_SIGMA_VALUES)
-    - Stage 2: Refinement at full resolution (3 steps with STAGE_2_DISTILLED_SIGMA_VALUES)
-    - Encoding: Video encoding into MP4 (variable chunks based on frame count)
+    Stage detection is based on step count patterns, NOT sequence position:
+    - Distilled: Stage 1 (8 steps), Stage 2 (3 steps), Encoding (variable)
+    - Two-stage: Stage 1 (num_inference_steps), Stage 2 (3 steps), Encoding (variable)
+    - One-stage: Stage 1 (num_inference_steps), Encoding (variable)
+    
+    Loading bars from safetensors may or may not appear depending on model caching.
     """
     
     # Shared state across stdout/stderr captures
     _shared_state = {}
     
-    def __init__(self, progress_callback, original_stream, capture_id):
+    # Known step counts for specific stages
+    DISTILLED_STAGE1_STEPS = 8  # DISTILLED_SIGMA_VALUES has 9 values, tqdm uses sigmas[:-1]
+    STAGE2_REFINEMENT_STEPS = 3  # STAGE_2_DISTILLED_SIGMA_VALUES has 4 values, tqdm uses sigmas[:-1]
+    
+    def __init__(self, progress_callback, original_stream, capture_id, pipeline_type=None, num_inference_steps=None):
         self.progress_callback = progress_callback
         self.original_stream = original_stream
         self.capture_id = capture_id
@@ -88,8 +94,14 @@ class OutputCapture:
         # Initialize shared state for this capture session
         if capture_id not in OutputCapture._shared_state:
             OutputCapture._shared_state[capture_id] = {
-                "completed_stages": [],  # Track (total,) tuples when 100% hit
-                "last_total": None,
+                "pipeline_type": pipeline_type,
+                "num_inference_steps": num_inference_steps,
+                # Track completed stages by step count (to distinguish loading vs stage 2)
+                "stage1_completed": False,  # Have we completed Stage 1?
+                "stage2_completed": False,  # Have we completed Stage 2?
+                "current_stage_total": None,  # Current bar's step count
+                "current_stage_name": None,  # Current stage name
+                "current_bar_completed": False,  # Has current bar hit 100%?
             }
         
         # tqdm patterns - matches progress like "  5%|███  | 1/8 [00:01<00:05, 1.25it/s]"
@@ -105,63 +117,93 @@ class OutputCapture:
         return OutputCapture._shared_state[self.capture_id]
     
     def _determine_stage(self, total, percentage):
-        """Determine stage name based on total steps and progress history.
+        """Determine stage name based on step count patterns and pipeline type.
         
-        For distilled pipeline on cold start:
-        - First 3-step loop (before 8): Loading Models (checkpoint shards)
-        - 8-step loop: Stage 1 Denoising (half resolution)
-        - First 3-step loop (after 8): Stage 2 Refinement (upsampled, full resolution)
-        - Second 3-step loop (after 8): Video Encoding (frame chunks)
-        
-        Console output pattern on cold start:
-        100%|##| 3/3 → Loading Models (checkpoint shards)
-        100%|##| 8/8 → Stage 1: Denoising
-        100%|##| 3/3 → Stage 2: Refinement  
-        100%|##| 3/3 → Video Encoding
+        Detection logic:
+        1. For distilled pipeline: Stage 1 = 8 steps, Stage 2 = 3 steps
+        2. For other pipelines: Stage 1 = num_inference_steps, Stage 2 = 3 steps
+        3. 3 steps BEFORE Stage 1 completes = Loading Models
+        4. 3 steps AFTER Stage 1 completes = Stage 2 Refinement (for two-stage)
+        5. Any steps after Stage 2 (or Stage 1 for one-stage) = Video Encoding
         """
-        completed = self.state["completed_stages"]
+        pipeline_type = self.state.get("pipeline_type")
+        num_inference_steps = self.state.get("num_inference_steps")
+        stage1_completed = self.state.get("stage1_completed", False)
+        stage2_completed = self.state.get("stage2_completed", False)
+        current_stage_total = self.state.get("current_stage_total")
+        current_stage_name = self.state.get("current_stage_name")
+        current_bar_completed = self.state.get("current_bar_completed", False)
         
-        # 8 steps = Always Stage 1 Denoising
-        if total == 8:
+        is_one_stage = pipeline_type == "ti2vid_one_stage"
+        is_distilled = pipeline_type == "distilled"
+        
+        # If still in the same bar (same total and bar not completed), return cached name
+        if current_stage_total == total and current_stage_name and not current_bar_completed:
+            # Check if bar just completed
+            if percentage >= 100:
+                self.state["current_bar_completed"] = True
+                self._mark_stage_completed(current_stage_name)
+            return current_stage_name
+        
+        # New bar detected (different total or previous bar completed) - determine stage
+        stage_name = self._identify_stage_by_steps(
+            total, stage1_completed, stage2_completed, 
+            is_one_stage, is_distilled, num_inference_steps
+        )
+        
+        # Update state for new bar
+        self.state["current_stage_total"] = total
+        self.state["current_stage_name"] = stage_name
+        self.state["current_bar_completed"] = (percentage >= 100)
+        
+        if percentage >= 100:
+            self._mark_stage_completed(stage_name)
+        
+        return stage_name
+    
+    def _identify_stage_by_steps(self, total, stage1_completed, stage2_completed, 
+                                   is_one_stage, is_distilled, num_inference_steps):
+        """Identify stage based on step count and pipeline state."""
+        
+        # Determine expected Stage 1 step count
+        expected_stage1_steps = self.DISTILLED_STAGE1_STEPS if is_distilled else num_inference_steps
+        
+        # Stage 1 detection: matches expected step count
+        if total == expected_stage1_steps and not stage1_completed:
             return "Stage 1: Denoising"
         
-        # Check if Stage 1 (8 steps) has been seen/completed
-        has_seen_stage1 = 8 in completed or self.state.get("seen_8_step", False)
-        
-        # Track if we've seen the 8-step loop (even before it completes)
-        if total == 8:
-            self.state["seen_8_step"] = True
-        
-        # For 3-step loops, differentiate by position relative to Stage 1
-        if total == 3:
-            if not has_seen_stage1:
-                # 3-step loop BEFORE Stage 1 = Model Loading (checkpoint shards)
+        # Stage 2 detection (3 steps, only for two-stage pipelines)
+        if total == self.STAGE2_REFINEMENT_STEPS:
+            if not stage1_completed:
+                # 3 steps before Stage 1 = Loading (from safetensors)
                 return "Loading Models"
-            
-            # Count how many 3-step loops have completed AFTER Stage 1
-            # We only count 3-step completions that happened after the 8-step
-            try:
-                stage1_idx = completed.index(8)
-                # Count 3s that appear after the 8
-                three_step_after_stage1 = completed[stage1_idx + 1:].count(3)
-            except ValueError:
-                # 8 not yet in completed, but we've seen it - count all 3s
-                three_step_after_stage1 = completed.count(3)
-            
-            if three_step_after_stage1 == 0:
-                # First 3-step loop after Stage 1 = Stage 2
+            elif not stage2_completed and not is_one_stage:
+                # 3 steps after Stage 1 = Stage 2 Refinement
                 return "Stage 2: Refinement"
-            else:
-                # Second or later 3-step loop after Stage 1 = Video Encoding
+        
+        # After main stages complete, it's encoding
+        if is_one_stage:
+            if stage1_completed:
+                return "Video Encoding"
+        else:
+            if stage1_completed and stage2_completed:
+                return "Video Encoding"
+            elif stage1_completed:
+                # Still waiting for Stage 2, but got unexpected step count
+                # Could be encoding if Stage 2 was skipped or has different steps
                 return "Video Encoding"
         
-        # For other totals
-        if not has_seen_stage1:
+        # Fallback for unexpected step counts
+        if not stage1_completed:
             return "Loading Models"
-        elif len(completed) >= 2:
-            return "Video Encoding"
-        else:
-            return "Processing"
+        return "Video Encoding"
+    
+    def _mark_stage_completed(self, stage_name):
+        """Mark a stage as completed based on its name."""
+        if "Stage 1" in stage_name:
+            self.state["stage1_completed"] = True
+        elif "Stage 2" in stage_name:
+            self.state["stage2_completed"] = True
     
     def write(self, text):
         # Also write to original stream
@@ -201,24 +243,7 @@ class OutputCapture:
             time_str = match.group(4)
             time_info = self._parse_time_info(time_str)
             
-            # Track when we first see an 8-step loop (Stage 1 starting)
-            if total == 8 and not self.state.get("seen_8_step", False):
-                self.state["seen_8_step"] = True
-            
             stage = self._determine_stage(total, percentage)
-            
-            # Track when we hit 100% (stage completion)
-            if percentage >= 100 and current >= total:
-                # Only record if this is a new completion (not duplicate 100%)
-                last_completed = self.state.get("last_completed")
-                if last_completed != total:
-                    self.state["completed_stages"].append(total)
-                    self.state["last_completed"] = total
-            else:
-                # Reset last_completed when we see a new progress (not 100%)
-                self.state["last_completed"] = None
-            
-            self.state["last_total"] = total
             
             self.progress_callback({
                 "type": "step",
@@ -239,20 +264,7 @@ class OutputCapture:
             current = int(match.group(2))
             total = int(match.group(3))
             
-            if total == 8 and not self.state.get("seen_8_step", False):
-                self.state["seen_8_step"] = True
-            
             stage = self._determine_stage(total, percentage)
-            
-            if percentage >= 100 and current >= total:
-                last_completed = self.state.get("last_completed")
-                if last_completed != total:
-                    self.state["completed_stages"].append(total)
-                    self.state["last_completed"] = total
-            else:
-                self.state["last_completed"] = None
-            
-            self.state["last_total"] = total
             
             self.progress_callback({
                 "type": "step",
@@ -272,22 +284,7 @@ class OutputCapture:
             time_info = self._parse_time_info(time_str)
             percentage = round(current / total * 100, 1) if total > 0 else 0
             
-            # Track when we first see an 8-step loop
-            if total == 8 and not self.state.get("seen_8_step", False):
-                self.state["seen_8_step"] = True
-            
             stage = self._determine_stage(total, percentage)
-            
-            # Track when we hit 100%
-            if current >= total:
-                last_completed = self.state.get("last_completed")
-                if last_completed != total:
-                    self.state["completed_stages"].append(total)
-                    self.state["last_completed"] = total
-            else:
-                self.state["last_completed"] = None
-            
-            self.state["last_total"] = total
             
             self.progress_callback({
                 "type": "step",
@@ -310,18 +307,20 @@ class OutputCapture:
 class OutputCaptureContext:
     """Context manager to capture stdout/stderr during generation."""
     
-    def __init__(self, progress_callback):
+    def __init__(self, progress_callback, pipeline_type=None, num_inference_steps=None):
         self.progress_callback = progress_callback
         self.original_stdout = None
         self.original_stderr = None
         # Unique capture ID for this context (shared between stdout/stderr)
         self.capture_id = id(self)
+        self.pipeline_type = pipeline_type
+        self.num_inference_steps = num_inference_steps
     
     def __enter__(self):
         self.original_stdout = sys.stdout
         self.original_stderr = sys.stderr
-        sys.stdout = OutputCapture(self.progress_callback, self.original_stdout, self.capture_id)
-        sys.stderr = OutputCapture(self.progress_callback, self.original_stderr, self.capture_id)
+        sys.stdout = OutputCapture(self.progress_callback, self.original_stdout, self.capture_id, self.pipeline_type, self.num_inference_steps)
+        sys.stderr = OutputCapture(self.progress_callback, self.original_stderr, self.capture_id, self.pipeline_type, self.num_inference_steps)
         return self
     
     def __exit__(self, exc_type, exc_val, exc_tb):
@@ -521,6 +520,19 @@ def auto_download_required_models(preset) -> tuple:
 # Pydantic Models for API
 # ============================================================================
 
+class ImageInput(BaseModel):
+    """Single image input with frame index and strength."""
+    image_base64: str = Field(..., description="Base64 encoded image")
+    frame_index: int = Field(default=0, ge=0, description="Frame index where this image applies")
+    strength: float = Field(default=1.0, ge=0.0, le=1.0, description="Conditioning strength")
+
+
+class VideoConditioningInput(BaseModel):
+    """Video conditioning input for IC-LoRA pipeline."""
+    video_base64: str = Field(..., description="Base64 encoded video file")
+    strength: float = Field(default=1.0, ge=0.0, le=1.0, description="Conditioning strength")
+
+
 class GenerationRequest(BaseModel):
     """Request model for video generation."""
     preset_name: Optional[str] = Field(
@@ -528,9 +540,19 @@ class GenerationRequest(BaseModel):
         description="Preset name to use. If not provided, uses default preset."
     )
     
-    # Override settings (optional - override preset values)
-    prompt: Optional[str] = Field(default=None, description="Override prompt from preset")
-    negative_prompt: Optional[str] = Field(default=None, description="Override negative prompt")
+    # Required generation input
+    prompt: str = Field(..., description="Prompt for video generation (required)")
+    negative_prompt: Optional[str] = Field(default="", description="Negative prompt")
+    
+    # Pipeline settings (override preset values)
+    pipeline_type: Optional[str] = Field(default=None, description="Override pipeline type")
+    checkpoint_path: Optional[str] = Field(default=None, description="Override checkpoint path")
+    spatial_upsampler_path: Optional[str] = Field(default=None, description="Override upsampler path")
+    distilled_lora_path: Optional[str] = Field(default=None, description="Override distilled LoRA path")
+    gemma_path: Optional[str] = Field(default=None, description="Override Gemma path")
+    enable_fp8: Optional[bool] = Field(default=None, description="Override FP8 setting")
+    
+    # Generation settings (override preset values)
     height: Optional[int] = Field(default=None, ge=256, le=2048, description="Override height")
     width: Optional[int] = Field(default=None, ge=256, le=2048, description="Override width")
     num_frames: Optional[int] = Field(default=None, ge=9, le=257, description="Override frame count")
@@ -538,14 +560,23 @@ class GenerationRequest(BaseModel):
     num_inference_steps: Optional[int] = Field(default=None, ge=4, le=100, description="Override steps")
     cfg_guidance_scale: Optional[float] = Field(default=None, ge=1.0, le=15.0, description="Override CFG")
     seed: Optional[int] = Field(default=None, description="Override seed (-1 for random)")
-    
-    # Image conditioning (base64 encoded)
-    input_image_base64: Optional[str] = Field(default=None, description="Base64 encoded input image")
     image_strength: Optional[float] = Field(default=None, ge=0.0, le=1.0, description="Image strength")
+    
+    # Multiple images support (new format)
+    images: Optional[List[ImageInput]] = Field(default=None, description="List of image inputs with frame indices")
+    
+    # Video conditioning for IC-LoRA pipeline
+    video_conditioning: Optional[List[VideoConditioningInput]] = Field(
+        default=None, 
+        description="Video conditioning inputs for IC-LoRA (depth maps, pose, edges)"
+    )
+    
+    # Legacy single image support (backward compatible)
+    input_image_base64: Optional[str] = Field(default=None, description="Base64 encoded input image (legacy)")
 
 
 class PresetCreate(BaseModel):
-    """Model for creating/updating a preset."""
+    """Model for creating/updating a preset (no prompt - that's a generation input)."""
     name: str = Field(..., min_length=1, max_length=100)
     description: str = Field(default="", max_length=500)
     
@@ -556,9 +587,7 @@ class PresetCreate(BaseModel):
     spatial_upsampler_path: Optional[str] = None
     gemma_path: str = Field(default="./models/gemma")
     
-    # Generation parameters
-    prompt: str = Field(default="")
-    negative_prompt: str = Field(default="")
+    # Generation parameters (NO prompt/negative_prompt - those are generation inputs)
     height: int = Field(default=1024, ge=256, le=2048)
     width: int = Field(default=1536, ge=256, le=2048)
     num_frames: int = Field(default=121, ge=9, le=257)
@@ -571,15 +600,13 @@ class PresetCreate(BaseModel):
 
 
 class PresetResponse(BaseModel):
-    """Response model for preset data."""
+    """Response model for preset data (no prompt - that's a generation input)."""
     name: str
     description: str
     is_default: bool
     created_at: str
     updated_at: str
     pipeline_type: str
-    prompt: str
-    negative_prompt: str
     height: int
     width: int
     num_frames: int
@@ -946,30 +973,54 @@ async def generate_video_stream(request: GenerationRequest):
     if not _pipeline_manager:
         raise HTTPException(status_code=503, detail="Generation service not ready")
     
-    # Get preset
+    # Get preset (optional - if not specified, use default as base for any missing values)
     preset_manager = get_preset_manager()
-    preset_name = request.preset_name or preset_manager.get_default_preset_name()
-    preset = preset_manager.get_preset(preset_name)
+    if request.preset_name:
+        preset = preset_manager.get_preset(request.preset_name)
+        if not preset:
+            raise HTTPException(status_code=404, detail=f"Preset '{request.preset_name}' not found")
+    else:
+        # Use default preset as base for any missing values
+        preset = preset_manager.get_default_preset()
     
-    if not preset:
-        raise HTTPException(status_code=404, detail=f"Preset '{preset_name}' not found")
+    # Handle input images (multiple images with frame indices)
+    image_inputs = []  # List of (path, frame_index, strength)
+    video_conditioning_inputs = []  # List of (path, strength)
+    temp_dir = OUTPUTS_DIR / "temp"
+    temp_dir.mkdir(exist_ok=True)
     
-    # Handle input image
-    input_image_path = None
-    if request.input_image_base64:
-        try:
-            from PIL import Image
-            
+    try:
+        from PIL import Image
+        
+        # Handle new multiple images format
+        if request.images:
+            for i, img_input in enumerate(request.images):
+                image_data = base64.b64decode(img_input.image_base64)
+                image = Image.open(io.BytesIO(image_data))
+                image_path = str(temp_dir / f"input_{uuid.uuid4().hex[:8]}_{i}.png")
+                image.save(image_path)
+                image_inputs.append((image_path, img_input.frame_index, img_input.strength))
+        
+        # Handle legacy single image format (backward compatible)
+        elif request.input_image_base64:
             image_data = base64.b64decode(request.input_image_base64)
             image = Image.open(io.BytesIO(image_data))
-            
-            # Save to temp file
-            temp_dir = OUTPUTS_DIR / "temp"
-            temp_dir.mkdir(exist_ok=True)
-            input_image_path = str(temp_dir / f"input_{uuid.uuid4().hex[:8]}.png")
-            image.save(input_image_path)
-        except Exception as e:
-            raise HTTPException(status_code=400, detail=f"Invalid input image: {e}")
+            image_path = str(temp_dir / f"input_{uuid.uuid4().hex[:8]}.png")
+            image.save(image_path)
+            strength = request.image_strength if request.image_strength is not None else preset.image_strength
+            image_inputs.append((image_path, 0, strength))
+        
+        # Handle video conditioning for IC-LoRA
+        if request.video_conditioning:
+            for i, vid_input in enumerate(request.video_conditioning):
+                video_data = base64.b64decode(vid_input.video_base64)
+                video_path = str(temp_dir / f"video_cond_{uuid.uuid4().hex[:8]}_{i}.mp4")
+                with open(video_path, 'wb') as f:
+                    f.write(video_data)
+                video_conditioning_inputs.append((video_path, vid_input.strength))
+                
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Invalid input media: {e}")
     
     job_id = str(uuid.uuid4())
     
@@ -1003,7 +1054,8 @@ async def generate_video_stream(request: GenerationRequest):
                     job_id=job_id,
                     request=request,
                     preset=preset,
-                    input_image_path=input_image_path,
+                    image_inputs=image_inputs,
+                    video_conditioning_inputs=video_conditioning_inputs,
                     progress_callback=send_progress,
                 )
                 
@@ -1069,18 +1121,24 @@ def _generate_video_with_progress(
     job_id: str,
     request: GenerationRequest,
     preset: GenerationPreset,
-    input_image_path: Optional[str],
+    image_inputs: List[tuple],
+    video_conditioning_inputs: List[tuple],
     progress_callback,
 ) -> str:
     """Generate video with progress callbacks. Returns output path."""
     
+    # Determine pipeline type and inference steps for stage detection
+    pipeline_type = request.pipeline_type if request.pipeline_type else preset.pipeline_type
+    num_inference_steps = request.num_inference_steps if request.num_inference_steps is not None else preset.num_inference_steps
+    
     # Capture stdout/stderr to parse tqdm progress
-    with OutputCaptureContext(progress_callback):
+    with OutputCaptureContext(progress_callback, pipeline_type, num_inference_steps):
         return _generate_video_internal(
             job_id=job_id,
             request=request,
             preset=preset,
-            input_image_path=input_image_path,
+            image_inputs=image_inputs,
+            video_conditioning_inputs=video_conditioning_inputs,
             progress_callback=progress_callback,
         )
 
@@ -1089,12 +1147,27 @@ def _generate_video_internal(
     job_id: str,
     request: GenerationRequest,
     preset: GenerationPreset,
-    input_image_path: Optional[str],
+    image_inputs: List[tuple],
+    video_conditioning_inputs: List[tuple],
     progress_callback,
 ) -> str:
     """Internal generation function."""
     import random
     from PIL import Image
+    
+    # Apply request overrides to preset (API and UI can override any setting)
+    if request.pipeline_type is not None:
+        preset.pipeline_type = request.pipeline_type
+    if request.checkpoint_path is not None:
+        preset.checkpoint_path = request.checkpoint_path
+    if request.spatial_upsampler_path is not None:
+        preset.spatial_upsampler_path = request.spatial_upsampler_path
+    if request.distilled_lora_path is not None:
+        preset.distilled_lora_path = request.distilled_lora_path
+    if request.gemma_path is not None:
+        preset.gemma_path = request.gemma_path
+    if request.enable_fp8 is not None:
+        preset.enable_fp8 = request.enable_fp8
     
     # Auto-download required models if not present
     try:
@@ -1104,17 +1177,18 @@ def _generate_video_internal(
     except Exception as e:
         raise RuntimeError(f"Failed to download required models: {e}")
     
-    # Merge request overrides with preset
-    prompt = request.prompt if request.prompt else preset.prompt
-    negative_prompt = request.negative_prompt if request.negative_prompt is not None else preset.negative_prompt
-    height = request.height if request.height else preset.height
-    width = request.width if request.width else preset.width
-    num_frames = request.num_frames if request.num_frames else preset.num_frames
-    frame_rate = request.frame_rate if request.frame_rate else preset.frame_rate
-    num_inference_steps = request.num_inference_steps if request.num_inference_steps else preset.num_inference_steps
-    cfg_guidance_scale = request.cfg_guidance_scale if request.cfg_guidance_scale else preset.cfg_guidance_scale
+    # Prompt is now required in the request (not from preset)
+    prompt = request.prompt
+    negative_prompt = request.negative_prompt if request.negative_prompt else ""
+    
+    # Merge request overrides with preset for generation parameters
+    height = request.height if request.height is not None else preset.height
+    width = request.width if request.width is not None else preset.width
+    num_frames = request.num_frames if request.num_frames is not None else preset.num_frames
+    frame_rate = request.frame_rate if request.frame_rate is not None else preset.frame_rate
+    num_inference_steps = request.num_inference_steps if request.num_inference_steps is not None else preset.num_inference_steps
+    cfg_guidance_scale = request.cfg_guidance_scale if request.cfg_guidance_scale is not None else preset.cfg_guidance_scale
     seed = request.seed if request.seed is not None else preset.seed
-    image_strength = request.image_strength if request.image_strength is not None else preset.image_strength
     
     if not prompt:
         raise ValueError("Prompt is required")
@@ -1134,10 +1208,11 @@ def _generate_video_internal(
     if error:
         raise RuntimeError(error)
     
-    # Prepare image conditioning
-    images = []
-    if input_image_path and Path(input_image_path).exists():
-        images = [(input_image_path, 0, image_strength)]
+    # Use the provided image_inputs directly (list of (path, frame_index, strength))
+    images = image_inputs if image_inputs else []
+    
+    # Use video conditioning inputs for IC-LoRA (list of (path, strength))
+    video_conditioning = video_conditioning_inputs if video_conditioning_inputs else []
     
     # Import utilities
     from ltx_core.model.video_vae import TilingConfig, get_video_chunks_number
@@ -1151,15 +1226,17 @@ def _generate_video_internal(
         video_chunks_number = get_video_chunks_number(num_frames, tiling_config)
     
     # Determine stage info based on pipeline type
+    # Stage 2 always uses STAGE_2_DISTILLED_SIGMA_VALUES (4 values, tqdm uses sigmas[:-1] = 3 steps)
     if preset.pipeline_type == "distilled":
-        stage_1_steps = 8  # Distilled uses 8 fixed sigmas
+        stage_1_steps = 8  # Distilled uses 8 fixed sigmas (DISTILLED_SIGMA_VALUES)
         stage_2_steps = 3  # Stage 2 distilled sigmas
     elif preset.pipeline_type == "ti2vid_one_stage":
         stage_1_steps = num_inference_steps
-        stage_2_steps = 0
+        stage_2_steps = 0  # One-stage has no Stage 2
     else:
+        # ti2vid_two_stages, ic_lora, keyframe_interpolation
         stage_1_steps = num_inference_steps
-        stage_2_steps = 8  # Typical stage 2 steps
+        stage_2_steps = 3  # Stage 2 uses STAGE_2_DISTILLED_SIGMA_VALUES (3 steps)
     
     progress_callback({
         "type": "info",
@@ -1199,7 +1276,7 @@ def _generate_video_internal(
                 num_frames=int(num_frames),
                 frame_rate=float(frame_rate),
                 images=images,
-                video_conditioning=[],
+                video_conditioning=video_conditioning,
                 tiling_config=tiling_config,
                 enhance_prompt=False,
             )
@@ -1289,8 +1366,6 @@ async def list_presets():
                 created_at=preset.created_at,
                 updated_at=preset.updated_at,
                 pipeline_type=preset.pipeline_type,
-                prompt=preset.prompt,
-                negative_prompt=preset.negative_prompt,
                 height=preset.height,
                 width=preset.width,
                 num_frames=preset.num_frames,
@@ -1325,8 +1400,6 @@ async def get_preset(preset_name: str):
         created_at=preset.created_at,
         updated_at=preset.updated_at,
         pipeline_type=preset.pipeline_type,
-        prompt=preset.prompt,
-        negative_prompt=preset.negative_prompt,
         height=preset.height,
         width=preset.width,
         num_frames=preset.num_frames,
@@ -1360,8 +1433,6 @@ async def create_preset(preset_data: PresetCreate):
         distilled_lora_path=preset_data.distilled_lora_path,
         spatial_upsampler_path=preset_data.spatial_upsampler_path or "",
         gemma_path=preset_data.gemma_path,
-        prompt=preset_data.prompt,
-        negative_prompt=preset_data.negative_prompt,
         height=preset_data.height,
         width=preset_data.width,
         num_frames=preset_data.num_frames,
@@ -1382,8 +1453,6 @@ async def create_preset(preset_data: PresetCreate):
         created_at=preset.created_at,
         updated_at=preset.updated_at,
         pipeline_type=preset.pipeline_type,
-        prompt=preset.prompt,
-        negative_prompt=preset.negative_prompt,
         height=preset.height,
         width=preset.width,
         num_frames=preset.num_frames,
@@ -1418,8 +1487,6 @@ async def update_preset(preset_name: str, preset_data: PresetCreate):
         distilled_lora_path=preset_data.distilled_lora_path,
         spatial_upsampler_path=preset_data.spatial_upsampler_path or existing.spatial_upsampler_path,
         gemma_path=preset_data.gemma_path,
-        prompt=preset_data.prompt,
-        negative_prompt=preset_data.negative_prompt,
         height=preset_data.height,
         width=preset_data.width,
         num_frames=preset_data.num_frames,
@@ -1441,8 +1508,6 @@ async def update_preset(preset_name: str, preset_data: PresetCreate):
         created_at=preset.created_at,
         updated_at=preset.updated_at,
         pipeline_type=preset.pipeline_type,
-        prompt=preset.prompt,
-        negative_prompt=preset.negative_prompt,
         height=preset.height,
         width=preset.width,
         num_frames=preset.num_frames,

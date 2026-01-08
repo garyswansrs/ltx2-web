@@ -17,7 +17,7 @@ DEFAULT_PRESET_NAME = "default"
 
 @dataclass
 class GenerationPreset:
-    """A preset containing all generation settings."""
+    """A preset containing all generation settings (excludes prompt - that's a generation input)."""
     name: str
     description: str = ""
     created_at: str = field(default_factory=lambda: datetime.now().isoformat())
@@ -30,9 +30,7 @@ class GenerationPreset:
     spatial_upsampler_path: str = ""
     gemma_path: str = "./models/gemma"
     
-    # Generation parameters
-    prompt: str = ""
-    negative_prompt: str = ""
+    # Generation parameters (NO prompt/negative_prompt - those are generation inputs, not settings)
     height: int = 1024
     width: int = 1536
     num_frames: int = 121
@@ -42,7 +40,7 @@ class GenerationPreset:
     seed: int = -1
     enable_fp8: bool = True
     
-    # Image conditioning
+    # Image/video conditioning defaults
     image_strength: float = 1.0
     
     def to_dict(self) -> Dict[str, Any]:
@@ -97,8 +95,6 @@ class PresetManager:
             name=DEFAULT_PRESET_NAME,
             description="Default generation settings for LTX-2",
             pipeline_type="distilled",
-            prompt="A beautiful cinematic shot of nature, high quality, 4K",
-            negative_prompt="blurry, low quality, distorted, ugly",
             height=1024,
             width=1536,
             num_frames=121,
@@ -179,8 +175,6 @@ class PresetManager:
         distilled_lora_path: str = "None",
         spatial_upsampler_path: str = "",
         gemma_path: str = "./models/gemma",
-        prompt: str = "",
-        negative_prompt: str = "",
         height: int = 1024,
         width: int = 1536,
         num_frames: int = 121,
@@ -191,7 +185,7 @@ class PresetManager:
         enable_fp8: bool = True,
         image_strength: float = 1.0,
     ) -> GenerationPreset:
-        """Create a preset from individual settings."""
+        """Create a preset from individual settings (no prompt - that's a generation input)."""
         preset = GenerationPreset(
             name=name,
             description=description,
@@ -200,8 +194,6 @@ class PresetManager:
             distilled_lora_path=distilled_lora_path,
             spatial_upsampler_path=spatial_upsampler_path,
             gemma_path=gemma_path,
-            prompt=prompt,
-            negative_prompt=negative_prompt,
             height=height,
             width=width,
             num_frames=num_frames,

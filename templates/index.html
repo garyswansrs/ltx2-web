@@ -1023,6 +1023,7 @@
                                 <option value="">Loading presets...</option>
                             </select>
                             <button class="btn btn-secondary btn-sm" onclick="loadPreset()">Load</button>
+                            <button class="btn btn-primary btn-sm" onclick="saveToPreset()">Save</button>
                         </div>
                     </div>
 
@@ -1205,19 +1206,19 @@
                                     <label for="checkpointSelect">Checkpoint Model</label>
                                     <div class="model-select-row">
                                         <select id="checkpointSelect">
-                                            <option value="">Auto-detect (recommended)</option>
+                                            <option value="">Select a model...</option>
                                         </select>
                                         <button class="btn btn-secondary btn-sm btn-icon" onclick="showDownloadModal('checkpoint')" title="Download checkpoint models">
                                             ⬇️
                                         </button>
                                     </div>
-                                    <div class="form-hint">Main model checkpoint. Leave as auto-detect or select a specific model.</div>
+                                    <div class="form-hint">Main model checkpoint. Download and select a model.</div>
                                 </div>
                                 <div class="form-group">
                                     <label for="upsamplerSelect">Spatial Upsampler</label>
                                     <div class="model-select-row">
                                         <select id="upsamplerSelect">
-                                            <option value="">Auto-detect (recommended)</option>
+                                            <option value="">Select a model...</option>
                                         </select>
                                         <button class="btn btn-secondary btn-sm btn-icon" onclick="showDownloadModal('upscaler')" title="Download upsampler models">
                                             ⬇️
@@ -1997,9 +1998,9 @@ for line in response.iter_lines():
                 const currentUpsampler = upsamplerSelect.value;
                 const currentLora = loraSelect.value;
                 
-                // Clear existing options (except defaults)
-                checkpointSelect.innerHTML = '<option value="">Auto-detect (recommended)</option>';
-                upsamplerSelect.innerHTML = '<option value="">Auto-detect (recommended)</option>';
+                // Clear existing options
+                checkpointSelect.innerHTML = '<option value="">Select a model...</option>';
+                upsamplerSelect.innerHTML = '<option value="">Select a model...</option>';
                 loraSelect.innerHTML = '<option value="None">None</option>';
                 
                 // Group models by type - all models are selectable (on-demand download)
@@ -2043,19 +2044,35 @@ for line in response.iter_lines():
                     }
                 });
                 
-                // Restore selections if they still exist
+                // Restore selections if they still exist, or select first available model
                 if (currentCheckpoint) {
                     const exists = Array.from(checkpointSelect.options).some(opt => opt.value === currentCheckpoint);
                     if (exists) {
                         checkpointSelect.value = currentCheckpoint;
                     }
                 }
+                // Auto-select first downloaded checkpoint if none selected
+                if (!checkpointSelect.value) {
+                    const firstReady = Array.from(checkpointSelect.options).find(opt => opt.value && !opt.value.startsWith('download:'));
+                    if (firstReady) {
+                        checkpointSelect.value = firstReady.value;
+                    }
+                }
+                
                 if (currentUpsampler) {
                     const exists = Array.from(upsamplerSelect.options).some(opt => opt.value === currentUpsampler);
                     if (exists) {
                         upsamplerSelect.value = currentUpsampler;
                     }
                 }
+                // Auto-select first downloaded upsampler if none selected
+                if (!upsamplerSelect.value) {
+                    const firstReady = Array.from(upsamplerSelect.options).find(opt => opt.value && !opt.value.startsWith('download:'));
+                    if (firstReady) {
+                        upsamplerSelect.value = firstReady.value;
+                    }
+                }
+                
                 if (currentLora) {
                     const exists = Array.from(loraSelect.options).some(opt => opt.value === currentLora);
                     if (exists) {
@@ -2135,9 +2152,7 @@ for line in response.iter_lines():
             
             try {
                 const preset = await apiCall(`/presets/${name}`);
-                // Generation settings
-                document.getElementById('prompt').value = preset.prompt || '';
-                document.getElementById('negativePrompt').value = preset.negative_prompt || '';
+                // Generation settings (no prompt/negative_prompt - those are generation inputs, not preset settings)
                 document.getElementById('height').value = preset.height;
                 document.getElementById('width').value = preset.width;
                 document.getElementById('numFrames').value = preset.num_frames;
@@ -2181,6 +2196,9 @@ for line in response.iter_lines():
                     document.getElementById('gemmaPath').value = preset.gemma_path || './models/gemma';
                 }
                 
+                // Update pipeline-specific UI
+                updatePipelineUI();
+                
                 showToast(`Loaded preset: ${name}`, 'success');
             } catch (error) {
                 showToast('Failed to load preset', 'error');
@@ -2198,9 +2216,7 @@ for line in response.iter_lines():
                 await apiCall('/presets', 'POST', {
                     name,
                     description: 'Created from Web UI',
-                    // Generation settings
-                    prompt: document.getElementById('prompt').value,
-                    negative_prompt: document.getElementById('negativePrompt').value,
+                    // Generation settings (no prompt/negative_prompt - those are generation inputs)
                     height: parseInt(document.getElementById('height').value),
                     width: parseInt(document.getElementById('width').value),
                     num_frames: parseInt(document.getElementById('numFrames').value),
@@ -2224,6 +2240,45 @@ for line in response.iter_lines():
                 refreshPresets();
             } catch (error) {
                 showToast(error.message || 'Failed to create preset', 'error');
+            }
+        }
+
+        async function saveToPreset() {
+            const name = document.getElementById('presetSelect').value;
+            if (!name) {
+                showToast('Please select a preset to save to', 'warning');
+                return;
+            }
+            
+            if (!confirm(`Save current settings to preset "${name}"?`)) return;
+
+            try {
+                await apiCall(`/presets/${name}`, 'PUT', {
+                    name,
+                    description: 'Updated from Web UI',
+                    // Generation settings (no prompt/negative_prompt - those are generation inputs)
+                    height: parseInt(document.getElementById('height').value),
+                    width: parseInt(document.getElementById('width').value),
+                    num_frames: parseInt(document.getElementById('numFrames').value),
+                    frame_rate: parseFloat(document.getElementById('frameRate').value),
+                    num_inference_steps: parseInt(document.getElementById('numSteps').value),
+                    cfg_guidance_scale: parseFloat(document.getElementById('cfgScale').value),
+                    seed: parseInt(document.getElementById('seed').value),
+                    // Model settings
+                    pipeline_type: document.getElementById('pipelineType').value,
+                    enable_fp8: document.getElementById('enableFp8').checked,
+                    image_strength: parseFloat(document.getElementById('imageStrength').value),
+                    // Model selection
+                    checkpoint_path: getModelSelectValue('checkpointSelect'),
+                    spatial_upsampler_path: getModelSelectValue('upsamplerSelect'),
+                    distilled_lora_path: getModelSelectValue('loraSelect') || 'None',
+                    gemma_path: document.getElementById('gemmaPath').value || './models/gemma'
+                });
+                showToast(`Saved settings to preset: ${name}`, 'success');
+                loadPresets();
+                refreshPresets();
+            } catch (error) {
+                showToast(error.message || 'Failed to save preset', 'error');
             }
         }
 
@@ -2344,9 +2399,11 @@ for line in response.iter_lines():
         };
         
         let generationStartTime = null;
+        let currentPipelineInfo = null;  // Store pipeline info for stage configuration
         
         function resetStageState() {
             generationStartTime = Date.now();
+            currentPipelineInfo = null;
             stageState = {
                 loading: { active: false, completed: false, step: 0, total: 0 },
                 denoising: { active: false, completed: false, step: 0, total: 8 },
@@ -2354,7 +2411,7 @@ for line in response.iter_lines():
                 encoding: { active: false, completed: false, step: 0, total: 3 }
             };
             
-            // Reset UI
+            // Reset UI - show all stages initially
             ['Loading', 'Denoising', 'Refinement', 'Encoding'].forEach(stage => {
                 const el = document.getElementById(`stage${stage}`);
                 const fill = document.getElementById(`stage${stage}Fill`);
@@ -2363,7 +2420,11 @@ for line in response.iter_lines():
                 
                 if (el) {
                     el.className = 'stage-item pending';
-                    if (stage === 'Loading') el.style.display = 'none';
+                    if (stage === 'Loading') {
+                        el.style.display = 'none';
+                    } else {
+                        el.style.display = 'block';
+                    }
                 }
                 if (fill) fill.style.width = '0%';
                 if (status) { status.textContent = 'Pending'; status.className = 'stage-status'; }
@@ -2371,24 +2432,57 @@ for line in response.iter_lines():
             });
         }
         
+        function configureStagesForPipeline(pipelineInfo) {
+            // Configure visible stages based on pipeline type
+            currentPipelineInfo = pipelineInfo;
+            const pipeline = pipelineInfo.pipeline;
+            
+            // One-stage pipeline has no refinement stage
+            const hasRefinement = pipeline !== 'ti2vid_one_stage';
+            
+            const refinementEl = document.getElementById('stageRefinement');
+            if (refinementEl) {
+                if (hasRefinement) {
+                    refinementEl.style.display = 'block';
+                } else {
+                    refinementEl.style.display = 'none';
+                    // Mark as completed so it doesn't affect the flow
+                    stageState.refinement.completed = true;
+                }
+            }
+        }
+        
         function updateStageUI(stageName, step, total, percentage, elapsed, remaining, rate) {
             const stageMap = {
                 'Loading Models': 'Loading',
                 'Stage 1: Denoising': 'Denoising',
                 'Stage 2: Refinement': 'Refinement',
-                'Video Encoding': 'Encoding'
+                'Video Encoding': 'Encoding',
+                // Handle Processing fallback
+                'Processing': 'Denoising'
             };
             
-            const stageKey = stageMap[stageName] || stageName;
-            const stateKey = stageKey.toLowerCase();
+            let stageKey = stageMap[stageName] || stageName;
+            let stateKey = stageKey.toLowerCase();
             
             // Show loading stage if it appears
             if (stageKey === 'Loading') {
                 document.getElementById('stageLoading').style.display = 'block';
             }
             
+            // For hidden stages (like refinement in one-stage), skip updates
+            const stageEl = document.getElementById(`stage${stageKey.charAt(0).toUpperCase() + stageKey.slice(1)}`);
+            if (stageEl && stageEl.style.display === 'none') {
+                return;
+            }
+            
             // Mark previous stages as completed (only if they were active before)
-            const stageOrder = ['loading', 'denoising', 'refinement', 'encoding'];
+            // Build stage order based on pipeline - exclude refinement for one-stage
+            let stageOrder = ['loading', 'denoising', 'refinement', 'encoding'];
+            if (currentPipelineInfo && currentPipelineInfo.pipeline === 'ti2vid_one_stage') {
+                stageOrder = ['loading', 'denoising', 'encoding'];
+            }
+            
             const currentIdx = stageOrder.indexOf(stateKey);
             stageOrder.forEach((s, idx) => {
                 // Only mark as completed if:
@@ -2497,22 +2591,53 @@ for line in response.iter_lines():
             try {
                 // Collect image inputs
                 const imageInputs = collectImageInputs();
-                let inputImageBase64 = null;
-                let imageStrength = parseFloat(document.getElementById('imageStrength').value) || 1.0;
+                const videoCondInputs = collectVideoConditioning();
                 
-                // For now, use the first image as the primary conditioning image
+                // Process images into new format
+                let images = null;
                 if (imageInputs.length > 0) {
-                    statusContent.innerHTML = '<div class="status status-info">Processing image...</div>';
-                    inputImageBase64 = await fileToBase64(imageInputs[0].file);
-                    imageStrength = imageInputs[0].strength;
+                    statusContent.innerHTML = '<div class="status status-info">Processing images...</div>';
+                    images = [];
+                    for (const img of imageInputs) {
+                        const base64 = await fileToBase64(img.file);
+                        images.push({
+                            image_base64: base64,
+                            frame_index: img.frame,
+                            strength: img.strength
+                        });
+                    }
                 }
                 
-                // Prepare request body
-                const preset = document.getElementById('presetSelect').value;
+                // Process video conditioning for IC-LoRA
+                let videoConditioning = null;
+                if (videoCondInputs.length > 0) {
+                    statusContent.innerHTML = '<div class="status status-info">Processing video conditioning...</div>';
+                    videoConditioning = [];
+                    for (const vid of videoCondInputs) {
+                        const base64 = await fileToBase64(vid.file);
+                        videoConditioning.push({
+                            video_base64: base64,
+                            strength: vid.strength
+                        });
+                    }
+                }
+                
+                // Prepare request body - Send preset name + ALL UI settings as overrides
+                const presetName = document.getElementById('presetSelect').value;
                 const requestBody = {
-                    preset_name: preset || null,
+                    // Preset (base settings)
+                    preset_name: presetName || null,
+                    // Prompt (required)
                     prompt,
                     negative_prompt: document.getElementById('negativePrompt').value,
+                    // Pipeline settings from UI (override preset)
+                    pipeline_type: document.getElementById('pipelineType').value,
+                    checkpoint_path: getModelSelectValue('checkpointSelect') || null,
+                    spatial_upsampler_path: getModelSelectValue('upsamplerSelect') || null,
+                    distilled_lora_path: getModelSelectValue('loraSelect') || null,
+                    gemma_path: document.getElementById('gemmaPath').value || null,
+                    enable_fp8: document.getElementById('enableFp8').checked,
+                    // Generation settings from UI (override preset)
                     height: parseInt(document.getElementById('height').value),
                     width: parseInt(document.getElementById('width').value),
                     num_frames: parseInt(document.getElementById('numFrames').value),
@@ -2520,8 +2645,10 @@ for line in response.iter_lines():
                     num_inference_steps: parseInt(document.getElementById('numSteps').value),
                     cfg_guidance_scale: parseFloat(document.getElementById('cfgScale').value),
                     seed: parseInt(document.getElementById('seed').value),
-                    input_image_base64: inputImageBase64,
-                    image_strength: imageStrength
+                    image_strength: parseFloat(document.getElementById('imageStrength').value),
+                    // Image/video inputs
+                    images: images,
+                    video_conditioning: videoConditioning
                 };
                 
                 statusContent.innerHTML = '<div class="status status-info">Starting generation...</div>';
@@ -2599,10 +2726,21 @@ for line in response.iter_lines():
                     break;
                     
                 case 'info':
+                    // Configure stages based on pipeline info
+                    configureStagesForPipeline(data);
+                    
                     // Store pipeline info in a compact display
+                    const pipelineLabel = {
+                        'distilled': 'Distilled (Fast)',
+                        'ti2vid_one_stage': 'One-Stage',
+                        'ti2vid_two_stages': 'Two-Stage',
+                        'ic_lora': 'IC-LoRA',
+                        'keyframe_interpolation': 'Keyframe'
+                    }[data.pipeline] || data.pipeline;
+                    
                     const infoHtml = `
                         <div class="status status-info" style="padding: 0.5rem 1rem; font-size: 0.85rem;">
-                            🎬 ${data.pipeline} • ${data.resolution} • ${data.num_frames} frames
+                            🎬 ${pipelineLabel} • ${data.resolution} • ${data.num_frames} frames
                         </div>`;
                     statusContent.innerHTML = infoHtml;
                     break;
@@ -2634,11 +2772,12 @@ for line in response.iter_lines():
                         totalTimeStr = mins > 0 ? `${mins}m ${secs}s` : `${secs}s`;
                     }
                     
-                    // Mark all stages as complete
+                    // Mark all visible stages as complete
                     ['Loading', 'Denoising', 'Refinement', 'Encoding'].forEach(stage => {
                         const el = document.getElementById(`stage${stage}`);
                         const fill = document.getElementById(`stage${stage}Fill`);
                         const status = document.getElementById(`stage${stage}Status`);
+                        // Only mark stages that are visible and were active (not still pending)
                         if (el && el.style.display !== 'none' && !el.classList.contains('pending')) {
                             el.className = 'stage-item completed';
                             if (fill) fill.style.width = '100%';
@@ -2675,10 +2814,17 @@ for line in response.iter_lines():
         }
 
         // Initialize
-        document.addEventListener('DOMContentLoaded', () => {
-            loadPresets();
+        document.addEventListener('DOMContentLoaded', async () => {
+            // Load presets first
+            await loadPresets();
+            
+            // Refresh model selects (populates dropdowns)
+            await refreshModelSelects();
+            
+            // Load the default preset's settings into the form
+            await loadPreset();
+            
             refreshHealth();
-            refreshModelSelects();
             
             // Add event listeners to model selects for download notifications
             ['checkpointSelect', 'upsamplerSelect', 'loraSelect'].forEach(selectId => {
