@@ -1,0 +1,1143 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>LTX-2 Video Generation</title>
+    <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&family=Outfit:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    <style>
+        :root {
+            --primary-hue: 265;
+            --accent-hue: 340;
+            --bg-dark: #0a0a0f;
+            --bg-card: #12121a;
+            --bg-hover: #1a1a25;
+            --bg-input: #0d0d14;
+            --border-color: #2a2a3a;
+            --border-focus: #a855f7;
+            --text-primary: #f0f0f5;
+            --text-secondary: #9090a5;
+            --text-muted: #606075;
+            --accent-purple: #a855f7;
+            --accent-pink: #ec4899;
+            --accent-orange: #f97316;
+            --accent-green: #22c55e;
+            --accent-red: #ef4444;
+            --accent-yellow: #f59e0b;
+            --accent-gradient: linear-gradient(135deg, #a855f7 0%, #ec4899 50%, #f97316 100%);
+            --glow-purple: 0 0 30px rgba(168, 85, 247, 0.3);
+            --glow-pink: 0 0 30px rgba(236, 72, 153, 0.3);
+        }
+
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Outfit', sans-serif;
+            background: var(--bg-dark);
+            color: var(--text-primary);
+            min-height: 100vh;
+            line-height: 1.6;
+        }
+
+        .container {
+            max-width: 1400px;
+            margin: 0 auto;
+            padding: 2rem;
+        }
+
+        /* Header */
+        .header {
+            text-align: center;
+            padding: 2rem 0 3rem;
+            position: relative;
+        }
+
+        .header::before {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: 50%;
+            transform: translateX(-50%);
+            width: 80%;
+            height: 100%;
+            background: radial-gradient(ellipse at center, rgba(168, 85, 247, 0.15) 0%, transparent 70%);
+            pointer-events: none;
+        }
+
+        .header h1 {
+            font-size: 3rem;
+            font-weight: 700;
+            background: var(--accent-gradient);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+            margin-bottom: 0.5rem;
+            letter-spacing: -0.02em;
+        }
+
+        .header p {
+            color: var(--text-secondary);
+            font-size: 1.1rem;
+        }
+
+        .header .links {
+            margin-top: 1rem;
+        }
+
+        .header .links a {
+            color: var(--accent-purple);
+            text-decoration: none;
+            margin: 0 0.5rem;
+            transition: color 0.3s;
+        }
+
+        .header .links a:hover {
+            color: var(--accent-pink);
+        }
+
+        /* Main Layout */
+        .main-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 2rem;
+        }
+
+        @media (max-width: 1024px) {
+            .main-grid {
+                grid-template-columns: 1fr;
+            }
+        }
+
+        /* Cards */
+        .card {
+            background: var(--bg-card);
+            border: 1px solid var(--border-color);
+            border-radius: 16px;
+            padding: 1.5rem;
+            margin-bottom: 1.5rem;
+        }
+
+        .card h2 {
+            font-size: 1.25rem;
+            font-weight: 600;
+            margin-bottom: 1rem;
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+        }
+
+        .card h3 {
+            font-size: 1rem;
+            font-weight: 500;
+            margin-bottom: 0.75rem;
+            color: var(--text-secondary);
+        }
+
+        /* Forms */
+        .form-group {
+            margin-bottom: 1rem;
+        }
+
+        .form-group label {
+            display: block;
+            font-weight: 500;
+            margin-bottom: 0.5rem;
+            color: var(--text-primary);
+        }
+
+        .form-group input,
+        .form-group textarea,
+        .form-group select {
+            width: 100%;
+            padding: 0.75rem 1rem;
+            background: var(--bg-input);
+            border: 1px solid var(--border-color);
+            border-radius: 10px;
+            color: var(--text-primary);
+            font-family: 'Outfit', sans-serif;
+            font-size: 1rem;
+            transition: all 0.3s ease;
+        }
+
+        .form-group input:focus,
+        .form-group textarea:focus,
+        .form-group select:focus {
+            outline: none;
+            border-color: var(--border-focus);
+            box-shadow: var(--glow-purple);
+        }
+
+        .form-group textarea {
+            resize: vertical;
+            min-height: 100px;
+        }
+
+        .form-row {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 1rem;
+        }
+
+        .form-hint {
+            font-size: 0.85rem;
+            color: var(--text-muted);
+            margin-top: 0.25rem;
+        }
+
+        /* Buttons */
+        .btn {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            gap: 0.5rem;
+            padding: 0.75rem 1.5rem;
+            border: none;
+            border-radius: 10px;
+            font-family: 'Outfit', sans-serif;
+            font-size: 1rem;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+        }
+
+        .btn-primary {
+            background: var(--accent-gradient);
+            color: white;
+        }
+
+        .btn-primary:hover {
+            box-shadow: var(--glow-purple), var(--glow-pink);
+            transform: translateY(-2px);
+        }
+
+        .btn-primary:disabled {
+            opacity: 0.6;
+            cursor: not-allowed;
+            transform: none;
+            box-shadow: none;
+        }
+
+        .btn-secondary {
+            background: var(--bg-hover);
+            border: 1px solid var(--border-color);
+            color: var(--text-primary);
+        }
+
+        .btn-secondary:hover {
+            border-color: var(--accent-purple);
+        }
+
+        .btn-sm {
+            padding: 0.5rem 1rem;
+            font-size: 0.875rem;
+        }
+
+        .btn-block {
+            width: 100%;
+        }
+
+        .btn-group {
+            display: flex;
+            gap: 0.5rem;
+        }
+
+        /* Status */
+        .status {
+            padding: 1rem;
+            border-radius: 10px;
+            margin-bottom: 1rem;
+        }
+
+        .status-success {
+            background: rgba(34, 197, 94, 0.1);
+            border: 1px solid rgba(34, 197, 94, 0.3);
+            color: var(--accent-green);
+        }
+
+        .status-error {
+            background: rgba(239, 68, 68, 0.1);
+            border: 1px solid rgba(239, 68, 68, 0.3);
+            color: var(--accent-red);
+        }
+
+        .status-warning {
+            background: rgba(245, 158, 11, 0.1);
+            border: 1px solid rgba(245, 158, 11, 0.3);
+            color: var(--accent-yellow);
+        }
+
+        .status-info {
+            background: rgba(168, 85, 247, 0.1);
+            border: 1px solid rgba(168, 85, 247, 0.3);
+            color: var(--accent-purple);
+        }
+
+        /* Progress */
+        .progress-container {
+            margin: 1rem 0;
+        }
+
+        .progress-bar {
+            height: 8px;
+            background: var(--bg-hover);
+            border-radius: 4px;
+            overflow: hidden;
+        }
+
+        .progress-fill {
+            height: 100%;
+            background: var(--accent-gradient);
+            transition: width 0.3s ease;
+            border-radius: 4px;
+        }
+
+        .progress-text {
+            font-size: 0.875rem;
+            color: var(--text-secondary);
+            margin-top: 0.5rem;
+            text-align: center;
+        }
+
+        /* Models List */
+        .model-item {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 1rem;
+            background: var(--bg-dark);
+            border: 1px solid var(--border-color);
+            border-radius: 10px;
+            margin-bottom: 0.75rem;
+            transition: all 0.3s ease;
+        }
+
+        .model-item:hover {
+            border-color: var(--accent-purple);
+        }
+
+        .model-info h4 {
+            font-weight: 600;
+            margin-bottom: 0.25rem;
+        }
+
+        .model-info p {
+            font-size: 0.875rem;
+            color: var(--text-secondary);
+        }
+
+        .model-status {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+        }
+
+        .badge {
+            padding: 0.25rem 0.75rem;
+            border-radius: 20px;
+            font-size: 0.75rem;
+            font-weight: 600;
+        }
+
+        .badge-ready {
+            background: rgba(34, 197, 94, 0.2);
+            color: var(--accent-green);
+        }
+
+        .badge-missing {
+            background: rgba(239, 68, 68, 0.2);
+            color: var(--accent-red);
+        }
+
+        .badge-downloading {
+            background: rgba(245, 158, 11, 0.2);
+            color: var(--accent-yellow);
+        }
+
+        /* Video Output */
+        .video-container {
+            background: var(--bg-dark);
+            border: 1px solid var(--border-color);
+            border-radius: 12px;
+            overflow: hidden;
+            aspect-ratio: 16 / 9;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .video-container video {
+            width: 100%;
+            height: 100%;
+            object-fit: contain;
+        }
+
+        .video-placeholder {
+            text-align: center;
+            color: var(--text-muted);
+        }
+
+        .video-placeholder svg {
+            width: 64px;
+            height: 64px;
+            margin-bottom: 1rem;
+            opacity: 0.5;
+        }
+
+        /* Queue */
+        .queue-item {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 0.75rem 1rem;
+            background: var(--bg-dark);
+            border-radius: 8px;
+            margin-bottom: 0.5rem;
+            font-size: 0.875rem;
+        }
+
+        .queue-item .job-id {
+            font-family: 'JetBrains Mono', monospace;
+            color: var(--text-secondary);
+        }
+
+        /* Tabs */
+        .tabs {
+            display: flex;
+            gap: 0.5rem;
+            padding: 0.5rem;
+            background: var(--bg-card);
+            border-radius: 12px;
+            border: 1px solid var(--border-color);
+            margin-bottom: 1.5rem;
+        }
+
+        .tab {
+            flex: 1;
+            padding: 0.75rem;
+            text-align: center;
+            border-radius: 8px;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            font-weight: 500;
+        }
+
+        .tab:hover {
+            background: var(--bg-hover);
+        }
+
+        .tab.active {
+            background: var(--accent-gradient);
+            color: white;
+        }
+
+        /* Collapsible */
+        .collapsible-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            cursor: pointer;
+            padding: 1rem;
+            background: var(--bg-dark);
+            border-radius: 10px;
+            margin-bottom: 0.5rem;
+            transition: all 0.3s ease;
+        }
+
+        .collapsible-header:hover {
+            background: var(--bg-hover);
+        }
+
+        .collapsible-content {
+            display: none;
+            padding: 1rem;
+        }
+
+        .collapsible-content.show {
+            display: block;
+        }
+
+        /* Health Status */
+        .health-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+            gap: 1rem;
+        }
+
+        .health-item {
+            text-align: center;
+            padding: 1rem;
+            background: var(--bg-dark);
+            border-radius: 10px;
+        }
+
+        .health-item .value {
+            font-size: 1.5rem;
+            font-weight: 700;
+            color: var(--accent-purple);
+        }
+
+        .health-item .label {
+            font-size: 0.75rem;
+            color: var(--text-secondary);
+            text-transform: uppercase;
+            letter-spacing: 0.1em;
+        }
+
+        /* Presets Dropdown */
+        .preset-row {
+            display: flex;
+            gap: 0.5rem;
+            margin-bottom: 1rem;
+        }
+
+        .preset-row select {
+            flex: 1;
+        }
+
+        /* Loading Spinner */
+        .spinner {
+            display: inline-block;
+            width: 20px;
+            height: 20px;
+            border: 2px solid rgba(255,255,255,0.3);
+            border-radius: 50%;
+            border-top-color: white;
+            animation: spin 0.8s linear infinite;
+        }
+
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+
+        /* Animations */
+        @keyframes pulse-glow {
+            0%, 100% { box-shadow: 0 0 20px rgba(168, 85, 247, 0.3); }
+            50% { box-shadow: 0 0 40px rgba(236, 72, 153, 0.5); }
+        }
+
+        .generating {
+            animation: pulse-glow 2s ease-in-out infinite;
+        }
+
+        /* Toast Notifications */
+        .toast-container {
+            position: fixed;
+            top: 1rem;
+            right: 1rem;
+            z-index: 1000;
+            display: flex;
+            flex-direction: column;
+            gap: 0.5rem;
+        }
+
+        .toast {
+            padding: 1rem 1.5rem;
+            border-radius: 10px;
+            animation: slideIn 0.3s ease;
+        }
+
+        @keyframes slideIn {
+            from {
+                transform: translateX(100%);
+                opacity: 0;
+            }
+            to {
+                transform: translateX(0);
+                opacity: 1;
+            }
+        }
+
+        /* Footer */
+        .footer {
+            text-align: center;
+            padding: 2rem 0;
+            color: var(--text-secondary);
+            font-size: 0.9rem;
+        }
+
+        .footer a {
+            color: var(--accent-purple);
+            text-decoration: none;
+        }
+
+        .footer a:hover {
+            color: var(--accent-pink);
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <!-- Header -->
+        <header class="header">
+            <h1>🎬 LTX-2 Video Generation</h1>
+            <p>Generate stunning AI videos with Lightricks LTX-2 • 4K @ 50 FPS • Up to 20 seconds</p>
+            <div class="links">
+                <a href="/docs" target="_blank">📚 API Docs</a> •
+                <a href="https://huggingface.co/Lightricks/LTX-2" target="_blank">🤗 HuggingFace</a> •
+                <a href="https://github.com/Lightricks/LTX-2" target="_blank">🐙 GitHub</a>
+            </div>
+        </header>
+
+        <!-- Tabs -->
+        <div class="tabs">
+            <div class="tab active" data-tab="generate">🎥 Generate</div>
+            <div class="tab" data-tab="models">📦 Models</div>
+            <div class="tab" data-tab="queue">📋 Queue</div>
+            <div class="tab" data-tab="presets">💾 Presets</div>
+        </div>
+
+        <!-- Toast Container -->
+        <div class="toast-container" id="toastContainer"></div>
+
+        <!-- Generate Tab -->
+        <div class="tab-content" id="generate-tab">
+            <div class="main-grid">
+                <!-- Left Column - Settings -->
+                <div class="left-column">
+                    <!-- Preset Selection -->
+                    <div class="card">
+                        <h2>💾 Preset</h2>
+                        <div class="preset-row">
+                            <select id="presetSelect">
+                                <option value="">Loading presets...</option>
+                            </select>
+                            <button class="btn btn-secondary btn-sm" onclick="loadPreset()">Load</button>
+                        </div>
+                    </div>
+
+                    <!-- Prompt -->
+                    <div class="card">
+                        <h2>✨ Prompt</h2>
+                        <div class="form-group">
+                            <label for="prompt">Prompt</label>
+                            <textarea id="prompt" placeholder="A beautiful sunset over the ocean with waves crashing on the shore..."></textarea>
+                        </div>
+                        <div class="form-group">
+                            <label for="negativePrompt">Negative Prompt</label>
+                            <textarea id="negativePrompt" style="min-height: 60px" placeholder="blurry, low quality, distorted..."></textarea>
+                        </div>
+                    </div>
+
+                    <!-- Settings -->
+                    <div class="card">
+                        <h2>⚙️ Settings</h2>
+                        <div class="form-row">
+                            <div class="form-group">
+                                <label for="height">Height</label>
+                                <input type="number" id="height" value="1024" min="256" max="2048" step="64">
+                            </div>
+                            <div class="form-group">
+                                <label for="width">Width</label>
+                                <input type="number" id="width" value="1536" min="256" max="2048" step="64">
+                            </div>
+                        </div>
+                        <div class="form-row">
+                            <div class="form-group">
+                                <label for="numFrames">Frames</label>
+                                <input type="number" id="numFrames" value="121" min="9" max="257" step="8">
+                            </div>
+                            <div class="form-group">
+                                <label for="frameRate">FPS</label>
+                                <input type="number" id="frameRate" value="24" min="8" max="60">
+                            </div>
+                        </div>
+                        <div class="form-row">
+                            <div class="form-group">
+                                <label for="numSteps">Inference Steps</label>
+                                <input type="number" id="numSteps" value="40" min="4" max="100">
+                            </div>
+                            <div class="form-group">
+                                <label for="cfgScale">CFG Scale</label>
+                                <input type="number" id="cfgScale" value="4.0" min="1" max="15" step="0.1">
+                            </div>
+                        </div>
+                        <div class="form-group">
+                            <label for="seed">Seed (-1 for random)</label>
+                            <input type="number" id="seed" value="-1">
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Right Column - Output -->
+                <div class="right-column">
+                    <!-- Generate Button -->
+                    <button class="btn btn-primary btn-block" id="generateBtn" onclick="generateVideo()">
+                        🚀 Generate Video
+                    </button>
+
+                    <!-- Status -->
+                    <div class="card" id="statusCard" style="display: none; margin-top: 1rem;">
+                        <h2>📊 Generation Status</h2>
+                        <div id="statusContent"></div>
+                        <div class="progress-container" id="progressContainer" style="display: none;">
+                            <div class="progress-bar">
+                                <div class="progress-fill" id="progressFill" style="width: 0%"></div>
+                            </div>
+                            <div class="progress-text" id="progressText">Waiting...</div>
+                        </div>
+                    </div>
+
+                    <!-- Video Output -->
+                    <div class="card" style="margin-top: 1rem;">
+                        <h2>🎬 Output</h2>
+                        <div class="video-container" id="videoContainer">
+                            <div class="video-placeholder">
+                                <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M14.752 11.168l-3.197-2.132A1 1 0 0010 9.87v4.263a1 1 0 001.555.832l3.197-2.132a1 1 0 000-1.664z" />
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                                </svg>
+                                <p>Your generated video will appear here</p>
+                            </div>
+                        </div>
+                        <div class="btn-group" style="margin-top: 1rem;">
+                            <button class="btn btn-secondary btn-sm" id="downloadBtn" style="display: none;" onclick="downloadVideo()">
+                                ⬇️ Download
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Models Tab -->
+        <div class="tab-content" id="models-tab" style="display: none;">
+            <div class="card">
+                <h2>📦 Model Management</h2>
+                <p style="color: var(--text-secondary); margin-bottom: 1rem;">
+                    Download models on-demand. Models will be automatically downloaded when needed for generation.
+                </p>
+                
+                <div id="modelsContainer">
+                    <div class="status status-info">Loading models...</div>
+                </div>
+            </div>
+
+            <!-- Health Status -->
+            <div class="card">
+                <h2>💻 System Status</h2>
+                <div class="health-grid" id="healthGrid">
+                    <div class="health-item">
+                        <div class="value" id="healthCuda">-</div>
+                        <div class="label">CUDA</div>
+                    </div>
+                    <div class="health-item">
+                        <div class="value" id="healthGpu">-</div>
+                        <div class="label">GPU Memory</div>
+                    </div>
+                    <div class="health-item">
+                        <div class="value" id="healthQueue">0</div>
+                        <div class="label">Queue Size</div>
+                    </div>
+                    <div class="health-item">
+                        <div class="value" id="healthPipeline">-</div>
+                        <div class="label">Pipeline</div>
+                    </div>
+                </div>
+                <button class="btn btn-secondary btn-sm" style="margin-top: 1rem;" onclick="refreshHealth()">
+                    🔄 Refresh Status
+                </button>
+            </div>
+        </div>
+
+        <!-- Queue Tab -->
+        <div class="tab-content" id="queue-tab" style="display: none;">
+            <div class="card">
+                <h2>📋 Generation Queue</h2>
+                <p style="color: var(--text-secondary); margin-bottom: 1rem;">
+                    Jobs are processed one at a time. New requests wait in queue.
+                </p>
+                <div id="queueContainer">
+                    <div class="status status-info">No jobs in queue</div>
+                </div>
+                <button class="btn btn-secondary btn-sm" style="margin-top: 1rem;" onclick="refreshQueue()">
+                    🔄 Refresh Queue
+                </button>
+            </div>
+        </div>
+
+        <!-- Presets Tab -->
+        <div class="tab-content" id="presets-tab" style="display: none;">
+            <div class="card">
+                <h2>💾 Preset Management</h2>
+                
+                <!-- Create Preset -->
+                <div class="form-group">
+                    <label for="newPresetName">Create New Preset</label>
+                    <div class="btn-group">
+                        <input type="text" id="newPresetName" placeholder="Enter preset name..." style="flex: 1;">
+                        <button class="btn btn-primary btn-sm" onclick="createPreset()">Save Current Settings</button>
+                    </div>
+                </div>
+
+                <hr style="border-color: var(--border-color); margin: 1.5rem 0;">
+
+                <!-- Existing Presets -->
+                <h3>Existing Presets</h3>
+                <div id="presetsContainer">
+                    <div class="status status-info">Loading presets...</div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Footer -->
+        <footer class="footer">
+            <p>Built with ❤️ for the AI video generation community</p>
+            <p><a href="https://github.com/Lightricks/LTX-2">GitHub</a> • <a href="https://huggingface.co/Lightricks/LTX-2">HuggingFace</a></p>
+        </footer>
+    </div>
+
+    <script>
+        // API Base URL
+        const API_BASE = '';
+
+        // State
+        let currentJobId = null;
+        let pollInterval = null;
+        let presets = [];
+        let models = {};
+
+        // Tab Navigation
+        document.querySelectorAll('.tab').forEach(tab => {
+            tab.addEventListener('click', () => {
+                document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+                document.querySelectorAll('.tab-content').forEach(c => c.style.display = 'none');
+                tab.classList.add('active');
+                document.getElementById(tab.dataset.tab + '-tab').style.display = 'block';
+                
+                // Refresh data when switching tabs
+                if (tab.dataset.tab === 'models') {
+                    refreshModels();
+                    refreshHealth();
+                } else if (tab.dataset.tab === 'queue') {
+                    refreshQueue();
+                } else if (tab.dataset.tab === 'presets') {
+                    refreshPresets();
+                }
+            });
+        });
+
+        // Toast Notifications
+        function showToast(message, type = 'info') {
+            const container = document.getElementById('toastContainer');
+            const toast = document.createElement('div');
+            toast.className = `toast status-${type}`;
+            toast.textContent = message;
+            container.appendChild(toast);
+            setTimeout(() => toast.remove(), 5000);
+        }
+
+        // API Calls
+        async function apiCall(endpoint, method = 'GET', data = null) {
+            try {
+                const options = {
+                    method,
+                    headers: { 'Content-Type': 'application/json' }
+                };
+                if (data) options.body = JSON.stringify(data);
+                const response = await fetch(API_BASE + endpoint, options);
+                if (!response.ok) {
+                    const error = await response.json();
+                    throw new Error(error.detail || 'API Error');
+                }
+                return await response.json();
+            } catch (error) {
+                console.error('API Error:', error);
+                throw error;
+            }
+        }
+
+        // Presets
+        async function loadPresets() {
+            try {
+                presets = await apiCall('/presets');
+                const select = document.getElementById('presetSelect');
+                select.innerHTML = presets.map(p => 
+                    `<option value="${p.name}" ${p.is_default ? 'selected' : ''}>${p.name}${p.is_default ? ' (default)' : ''}</option>`
+                ).join('');
+            } catch (error) {
+                showToast('Failed to load presets', 'error');
+            }
+        }
+
+        async function loadPreset() {
+            const name = document.getElementById('presetSelect').value;
+            if (!name) return;
+            
+            try {
+                const preset = await apiCall(`/presets/${name}`);
+                document.getElementById('prompt').value = preset.prompt || '';
+                document.getElementById('negativePrompt').value = preset.negative_prompt || '';
+                document.getElementById('height').value = preset.height;
+                document.getElementById('width').value = preset.width;
+                document.getElementById('numFrames').value = preset.num_frames;
+                document.getElementById('frameRate').value = preset.frame_rate;
+                document.getElementById('numSteps').value = preset.num_inference_steps;
+                document.getElementById('cfgScale').value = preset.cfg_guidance_scale;
+                document.getElementById('seed').value = preset.seed;
+                showToast(`Loaded preset: ${name}`, 'success');
+            } catch (error) {
+                showToast('Failed to load preset', 'error');
+            }
+        }
+
+        async function createPreset() {
+            const name = document.getElementById('newPresetName').value.trim();
+            if (!name) {
+                showToast('Please enter a preset name', 'warning');
+                return;
+            }
+
+            try {
+                await apiCall('/presets', 'POST', {
+                    name,
+                    description: 'Created from Web UI',
+                    prompt: document.getElementById('prompt').value,
+                    negative_prompt: document.getElementById('negativePrompt').value,
+                    height: parseInt(document.getElementById('height').value),
+                    width: parseInt(document.getElementById('width').value),
+                    num_frames: parseInt(document.getElementById('numFrames').value),
+                    frame_rate: parseFloat(document.getElementById('frameRate').value),
+                    num_inference_steps: parseInt(document.getElementById('numSteps').value),
+                    cfg_guidance_scale: parseFloat(document.getElementById('cfgScale').value),
+                    seed: parseInt(document.getElementById('seed').value)
+                });
+                showToast(`Created preset: ${name}`, 'success');
+                document.getElementById('newPresetName').value = '';
+                loadPresets();
+                refreshPresets();
+            } catch (error) {
+                showToast(error.message || 'Failed to create preset', 'error');
+            }
+        }
+
+        async function refreshPresets() {
+            try {
+                const presetsData = await apiCall('/presets');
+                const container = document.getElementById('presetsContainer');
+                
+                if (presetsData.length === 0) {
+                    container.innerHTML = '<div class="status status-info">No presets found</div>';
+                    return;
+                }
+
+                container.innerHTML = presetsData.map(p => `
+                    <div class="model-item">
+                        <div class="model-info">
+                            <h4>${p.name} ${p.is_default ? '⭐' : ''}</h4>
+                            <p>${p.description || 'No description'}</p>
+                        </div>
+                        <div class="btn-group">
+                            ${!p.is_default ? `<button class="btn btn-secondary btn-sm" onclick="setDefaultPreset('${p.name}')">Set Default</button>` : ''}
+                            ${p.name !== 'default' ? `<button class="btn btn-secondary btn-sm" onclick="deletePreset('${p.name}')">🗑️</button>` : ''}
+                        </div>
+                    </div>
+                `).join('');
+            } catch (error) {
+                showToast('Failed to refresh presets', 'error');
+            }
+        }
+
+        async function setDefaultPreset(name) {
+            try {
+                await apiCall(`/presets/${name}/set-default`, 'POST');
+                showToast(`${name} is now the default preset`, 'success');
+                loadPresets();
+                refreshPresets();
+            } catch (error) {
+                showToast('Failed to set default preset', 'error');
+            }
+        }
+
+        async function deletePreset(name) {
+            if (!confirm(`Delete preset "${name}"?`)) return;
+            try {
+                await apiCall(`/presets/${name}`, 'DELETE');
+                showToast(`Deleted preset: ${name}`, 'success');
+                loadPresets();
+                refreshPresets();
+            } catch (error) {
+                showToast(error.message || 'Failed to delete preset', 'error');
+            }
+        }
+
+        // Models
+        async function refreshModels() {
+            try {
+                const data = await apiCall('/models');
+                models = data;
+                const container = document.getElementById('modelsContainer');
+                
+                container.innerHTML = Object.entries(data).map(([key, model]) => `
+                    <div class="model-item">
+                        <div class="model-info">
+                            <h4>${key}</h4>
+                            <p>${model.description} (${model.size})</p>
+                        </div>
+                        <div class="model-status">
+                            <span class="badge ${model.status === 'ready' ? 'badge-ready' : 'badge-missing'}">
+                                ${model.status === 'ready' ? '✅ Ready' : '❌ Not Downloaded'}
+                            </span>
+                            ${model.status !== 'ready' ? `
+                                <button class="btn btn-primary btn-sm" onclick="downloadModel('${key}')">
+                                    ⬇️ Download
+                                </button>
+                            ` : ''}
+                        </div>
+                    </div>
+                `).join('');
+            } catch (error) {
+                showToast('Failed to refresh models', 'error');
+            }
+        }
+
+        async function downloadModel(modelKey) {
+            try {
+                showToast(`Starting download: ${modelKey}`, 'info');
+                const result = await apiCall(`/models/${modelKey}/download`, 'POST');
+                showToast(result.message || 'Download complete!', 'success');
+                refreshModels();
+            } catch (error) {
+                showToast(error.message || 'Download failed', 'error');
+            }
+        }
+
+        // Health
+        async function refreshHealth() {
+            try {
+                const health = await apiCall('/health');
+                document.getElementById('healthCuda').textContent = health.cuda_available ? '✅' : '❌';
+                document.getElementById('healthGpu').textContent = health.gpu_memory_gb ? `${health.gpu_memory_gb} GB` : 'N/A';
+                document.getElementById('healthQueue').textContent = health.queue_size;
+                document.getElementById('healthPipeline').textContent = health.pipeline_loaded ? '✅' : '❌';
+            } catch (error) {
+                console.error('Health check failed:', error);
+            }
+        }
+
+        // Queue
+        async function refreshQueue() {
+            // Queue info would come from tracking jobs - for now show current job
+            const container = document.getElementById('queueContainer');
+            if (currentJobId) {
+                try {
+                    const job = await apiCall(`/generate/${currentJobId}`);
+                    container.innerHTML = `
+                        <div class="queue-item">
+                            <span class="job-id">${job.job_id.substring(0, 8)}...</span>
+                            <span class="badge ${job.status === 'completed' ? 'badge-ready' : job.status === 'processing' ? 'badge-downloading' : 'badge-missing'}">
+                                ${job.status}
+                            </span>
+                        </div>
+                    `;
+                } catch (error) {
+                    container.innerHTML = '<div class="status status-info">No jobs in queue</div>';
+                }
+            } else {
+                container.innerHTML = '<div class="status status-info">No jobs in queue</div>';
+            }
+        }
+
+        // Video Generation
+        async function generateVideo() {
+            const btn = document.getElementById('generateBtn');
+            const statusCard = document.getElementById('statusCard');
+            const statusContent = document.getElementById('statusContent');
+            const progressContainer = document.getElementById('progressContainer');
+            const progressFill = document.getElementById('progressFill');
+            const progressText = document.getElementById('progressText');
+
+            const prompt = document.getElementById('prompt').value.trim();
+            if (!prompt) {
+                showToast('Please enter a prompt', 'warning');
+                return;
+            }
+
+            btn.disabled = true;
+            btn.innerHTML = '<span class="spinner"></span> Generating...';
+            statusCard.style.display = 'block';
+            progressContainer.style.display = 'block';
+
+            try {
+                // Submit job
+                const preset = document.getElementById('presetSelect').value;
+                const job = await apiCall('/generate', 'POST', {
+                    preset_name: preset || null,
+                    prompt,
+                    negative_prompt: document.getElementById('negativePrompt').value,
+                    height: parseInt(document.getElementById('height').value),
+                    width: parseInt(document.getElementById('width').value),
+                    num_frames: parseInt(document.getElementById('numFrames').value),
+                    frame_rate: parseFloat(document.getElementById('frameRate').value),
+                    num_inference_steps: parseInt(document.getElementById('numSteps').value),
+                    cfg_guidance_scale: parseFloat(document.getElementById('cfgScale').value),
+                    seed: parseInt(document.getElementById('seed').value)
+                });
+
+                currentJobId = job.job_id;
+                statusContent.innerHTML = `<div class="status status-info">Job submitted: ${job.job_id.substring(0, 8)}...</div>`;
+                progressText.textContent = 'Queued...';
+                progressFill.style.width = '10%';
+
+                // Poll for status
+                pollInterval = setInterval(async () => {
+                    try {
+                        const status = await apiCall(`/generate/${currentJobId}`);
+                        
+                        if (status.status === 'processing') {
+                            progressFill.style.width = '50%';
+                            progressText.textContent = 'Generating video...';
+                            statusContent.innerHTML = `<div class="status status-warning">Processing...</div>`;
+                        } else if (status.status === 'completed') {
+                            clearInterval(pollInterval);
+                            progressFill.style.width = '100%';
+                            progressText.textContent = 'Complete!';
+                            statusContent.innerHTML = `<div class="status status-success">Video generated successfully!</div>`;
+                            
+                            // Show video
+                            const videoContainer = document.getElementById('videoContainer');
+                            videoContainer.innerHTML = `<video controls autoplay><source src="/generate/${currentJobId}/download" type="video/mp4"></video>`;
+                            document.getElementById('downloadBtn').style.display = 'inline-flex';
+                            
+                            btn.disabled = false;
+                            btn.innerHTML = '🚀 Generate Video';
+                        } else if (status.status === 'failed') {
+                            clearInterval(pollInterval);
+                            progressFill.style.width = '0%';
+                            statusContent.innerHTML = `<div class="status status-error">Failed: ${status.error_message || 'Unknown error'}</div>`;
+                            
+                            btn.disabled = false;
+                            btn.innerHTML = '🚀 Generate Video';
+                        }
+                    } catch (error) {
+                        console.error('Poll error:', error);
+                    }
+                }, 2000);
+
+            } catch (error) {
+                statusContent.innerHTML = `<div class="status status-error">${error.message || 'Failed to submit job'}</div>`;
+                progressContainer.style.display = 'none';
+                btn.disabled = false;
+                btn.innerHTML = '🚀 Generate Video';
+            }
+        }
+
+        function downloadVideo() {
+            if (currentJobId) {
+                window.open(`/generate/${currentJobId}/download`, '_blank');
+            }
+        }
+
+        // Initialize
+        document.addEventListener('DOMContentLoaded', () => {
+            loadPresets();
+            refreshHealth();
+        });
+    </script>
+</body>
+</html>

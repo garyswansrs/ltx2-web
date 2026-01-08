@@ -33,6 +33,12 @@ numpy>=1.26.0
 tqdm>=4.66.0
 compressed-tensors
 bitsandbytes
+
+# FastAPI for REST API service
+fastapi>=0.115.0
+uvicorn[standard]>=0.32.0
+python-multipart>=0.0.9
+
 # For optimized memory allocation
 # Set PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 

@@ -25,6 +25,8 @@ from PIL import Image
 import tempfile
 import shutil
 
+from presets import get_preset_manager, GenerationPreset, DEFAULT_PRESET_NAME
+
 # Constants
 MODELS_DIR = Path("./models")
 OUTPUTS_DIR = Path("./outputs")
@@ -1050,6 +1052,32 @@ def create_ui():
                     # Left Column - Settings
                     with gr.Column(scale=1):
                         
+                        # Preset Management Section
+                        with gr.Group():
+                            gr.Markdown("### 💾 Presets")
+                            with gr.Row():
+                                preset_dropdown = gr.Dropdown(
+                                    choices=get_preset_manager().list_presets(),
+                                    value=get_preset_manager().get_default_preset_name(),
+                                    label="Load Preset",
+                                    scale=2
+                                )
+                                load_preset_btn = gr.Button("📂 Load", variant="secondary", size="sm", scale=1)
+                            
+                            with gr.Row():
+                                preset_name_input = gr.Textbox(
+                                    label="Preset Name",
+                                    placeholder="Enter preset name...",
+                                    scale=2
+                                )
+                                save_preset_btn = gr.Button("💾 Save", variant="primary", size="sm", scale=1)
+                            
+                            with gr.Row():
+                                set_default_btn = gr.Button("⭐ Set as Default", variant="secondary", size="sm")
+                                delete_preset_btn = gr.Button("🗑️ Delete", variant="secondary", size="sm")
+                            
+                            preset_status = gr.Markdown("")
+                        
                         # Pipeline Selection
                         with gr.Group():
                             gr.Markdown("### 🔧 Pipeline")
@@ -1245,6 +1273,138 @@ def create_ui():
                 refresh_btn.click(
                     refresh_models,
                     outputs=[checkpoint_path, distilled_lora_path, spatial_upsampler_path]
+                )
+                
+                # Preset management handlers
+                def load_preset(preset_name):
+                    """Load a preset and return all setting values."""
+                    preset_manager = get_preset_manager()
+                    preset = preset_manager.get_preset(preset_name)
+                    if not preset:
+                        return [gr.update()] * 13 + [f"❌ Preset '{preset_name}' not found"]
+                    
+                    return [
+                        gr.update(value=preset.pipeline_type),  # pipeline_type
+                        gr.update(value=preset.checkpoint_path if preset.checkpoint_path else get_default_checkpoint()),  # checkpoint_path
+                        gr.update(value=preset.distilled_lora_path),  # distilled_lora_path
+                        gr.update(value=preset.spatial_upsampler_path if preset.spatial_upsampler_path else get_default_upsampler()),  # spatial_upsampler_path
+                        gr.update(value=preset.gemma_path),  # gemma_path
+                        gr.update(value=preset.height),  # height
+                        gr.update(value=preset.width),  # width
+                        gr.update(value=preset.num_frames),  # num_frames
+                        gr.update(value=preset.frame_rate),  # frame_rate
+                        gr.update(value=preset.num_inference_steps),  # num_inference_steps
+                        gr.update(value=preset.cfg_guidance_scale),  # cfg_guidance_scale
+                        gr.update(value=preset.seed),  # seed
+                        gr.update(value=preset.enable_fp8),  # enable_fp8
+                        gr.update(value=preset.prompt),  # prompt
+                        gr.update(value=preset.negative_prompt),  # negative_prompt
+                        gr.update(value=preset.image_strength),  # image_strength
+                        f"✅ Loaded preset: **{preset_name}**"  # status
+                    ]
+                
+                def save_preset(
+                    preset_name_input, pipeline_type, checkpoint_path, distilled_lora_path,
+                    spatial_upsampler_path, gemma_path, height, width, num_frames,
+                    frame_rate, num_inference_steps, cfg_guidance_scale, seed, enable_fp8,
+                    prompt, negative_prompt, image_strength
+                ):
+                    """Save current settings as a preset."""
+                    preset_manager = get_preset_manager()
+                    
+                    if not preset_name_input or not preset_name_input.strip():
+                        return gr.update(), "❌ Please enter a preset name"
+                    
+                    name = preset_name_input.strip()
+                    existing = preset_manager.get_preset(name)
+                    
+                    preset = preset_manager.create_preset_from_settings(
+                        name=name,
+                        description=f"Saved from WebUI on {time.strftime('%Y-%m-%d %H:%M')}",
+                        pipeline_type=pipeline_type,
+                        checkpoint_path=checkpoint_path if checkpoint_path else "",
+                        distilled_lora_path=distilled_lora_path if distilled_lora_path else "None",
+                        spatial_upsampler_path=spatial_upsampler_path if spatial_upsampler_path else "",
+                        gemma_path=gemma_path if gemma_path else "./models/gemma",
+                        prompt=prompt if prompt else "",
+                        negative_prompt=negative_prompt if negative_prompt else "",
+                        height=int(height),
+                        width=int(width),
+                        num_frames=int(num_frames),
+                        frame_rate=float(frame_rate),
+                        num_inference_steps=int(num_inference_steps),
+                        cfg_guidance_scale=float(cfg_guidance_scale),
+                        seed=int(seed),
+                        enable_fp8=bool(enable_fp8),
+                        image_strength=float(image_strength),
+                    )
+                    
+                    preset_manager.save_preset(preset, overwrite=True)
+                    
+                    action = "updated" if existing else "created"
+                    return (
+                        gr.update(choices=preset_manager.list_presets(), value=name),
+                        f"✅ Preset **{name}** {action} successfully!"
+                    )
+                
+                def set_preset_as_default(preset_name):
+                    """Set a preset as the default."""
+                    preset_manager = get_preset_manager()
+                    if preset_manager.set_default(preset_name):
+                        return f"⭐ **{preset_name}** is now the default preset"
+                    return f"❌ Failed to set default preset"
+                
+                def delete_preset(preset_name):
+                    """Delete a preset."""
+                    preset_manager = get_preset_manager()
+                    if preset_name == DEFAULT_PRESET_NAME:
+                        return gr.update(), f"❌ Cannot delete the default preset"
+                    
+                    if preset_manager.delete_preset(preset_name):
+                        new_default = preset_manager.get_default_preset_name()
+                        return (
+                            gr.update(choices=preset_manager.list_presets(), value=new_default),
+                            f"✅ Preset **{preset_name}** deleted"
+                        )
+                    return gr.update(), f"❌ Failed to delete preset"
+                
+                def refresh_presets():
+                    """Refresh preset list."""
+                    preset_manager = get_preset_manager()
+                    return gr.update(choices=preset_manager.list_presets())
+                
+                load_preset_btn.click(
+                    load_preset,
+                    inputs=[preset_dropdown],
+                    outputs=[
+                        pipeline_type, checkpoint_path, distilled_lora_path,
+                        spatial_upsampler_path, gemma_path, height, width, num_frames,
+                        frame_rate, num_inference_steps, cfg_guidance_scale, seed, enable_fp8,
+                        prompt, negative_prompt, image_strength, preset_status
+                    ]
+                )
+                
+                save_preset_btn.click(
+                    save_preset,
+                    inputs=[
+                        preset_name_input, pipeline_type, checkpoint_path, distilled_lora_path,
+                        spatial_upsampler_path, gemma_path, height, width, num_frames,
+                        frame_rate, num_inference_steps, cfg_guidance_scale, seed, enable_fp8,
+                        prompt, negative_prompt, image_strength
+                    ],
+                    outputs=[preset_dropdown, preset_status]
+                )
+                
+                set_default_btn.click(
+                    set_preset_as_default,
+                    inputs=[preset_dropdown],
+                    outputs=[preset_status]
+                )
+                
+                delete_preset_btn.click(
+                    delete_preset,
+                    inputs=[preset_dropdown],
+                    outputs=[preset_dropdown, preset_status]
                 )
                 
                 generate_btn.click(
@@ -1574,7 +1734,7 @@ if __name__ == "__main__":
     demo.launch(
         server_name="0.0.0.0",
         server_port=7860,
-        share=False,
+        share=True,
         show_error=True
     )
 
