@@ -278,11 +278,104 @@
             color: var(--accent-purple);
         }
 
-        /* Progress */
+        /* Progress - Multi-stage */
         .progress-container {
             margin: 1rem 0;
         }
 
+        .stages-container {
+            display: flex;
+            flex-direction: column;
+            gap: 0.75rem;
+        }
+
+        .stage-item {
+            background: var(--bg-dark);
+            border: 1px solid var(--border-color);
+            border-radius: 8px;
+            padding: 0.75rem;
+            transition: all 0.3s ease;
+        }
+
+        .stage-item.active {
+            border-color: var(--accent);
+            box-shadow: 0 0 12px rgba(168, 85, 247, 0.2);
+        }
+
+        .stage-item.completed {
+            border-color: #22c55e;
+        }
+
+        .stage-item.pending {
+            opacity: 0.5;
+        }
+
+        .stage-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 0.5rem;
+        }
+
+        .stage-name {
+            font-weight: 600;
+            font-size: 0.9rem;
+            color: var(--text-primary);
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+        }
+
+        .stage-status {
+            font-size: 0.8rem;
+            color: var(--text-secondary);
+        }
+
+        .stage-status.active {
+            color: var(--accent);
+        }
+
+        .stage-status.completed {
+            color: #22c55e;
+        }
+
+        .stage-bar {
+            height: 6px;
+            background: var(--bg-hover);
+            border-radius: 3px;
+            overflow: hidden;
+        }
+
+        .stage-fill {
+            height: 100%;
+            border-radius: 3px;
+            transition: width 0.2s ease;
+        }
+
+        .stage-fill.loading {
+            background: linear-gradient(90deg, #f59e0b, #f97316);
+        }
+
+        .stage-fill.stage1 {
+            background: linear-gradient(90deg, #a855f7, #ec4899);
+        }
+
+        .stage-fill.stage2 {
+            background: linear-gradient(90deg, #3b82f6, #06b6d4);
+        }
+
+        .stage-fill.encoding {
+            background: linear-gradient(90deg, #22c55e, #10b981);
+        }
+
+        .stage-detail {
+            font-size: 0.75rem;
+            color: var(--text-secondary);
+            margin-top: 0.35rem;
+            text-align: right;
+        }
+
+        /* Legacy progress (for fallback) */
         .progress-bar {
             height: 8px;
             background: var(--bg-hover);
@@ -897,7 +990,6 @@
         <div class="tabs">
             <div class="tab active" data-tab="generate">🎥 Generate</div>
             <div class="tab" data-tab="models">📦 Models</div>
-            <div class="tab" data-tab="queue">📋 Queue</div>
             <div class="tab" data-tab="presets">💾 Presets</div>
             <div class="tab" data-tab="api">📚 API</div>
         </div>
@@ -1167,10 +1259,55 @@
                         <h2>📊 Generation Status</h2>
                         <div id="statusContent"></div>
                         <div class="progress-container" id="progressContainer" style="display: none;">
-                            <div class="progress-bar">
-                                <div class="progress-fill" id="progressFill" style="width: 0%"></div>
+                            <div class="stages-container" id="stagesContainer">
+                                <!-- Stage: Loading Models -->
+                                <div class="stage-item pending" id="stageLoading" style="display: none;">
+                                    <div class="stage-header">
+                                        <span class="stage-name">⚙️ Loading Models</span>
+                                        <span class="stage-status" id="stageLoadingStatus">Pending</span>
+                                    </div>
+                                    <div class="stage-bar">
+                                        <div class="stage-fill loading" id="stageLoadingFill" style="width: 0%"></div>
+                                    </div>
+                                    <div class="stage-detail" id="stageLoadingDetail"></div>
+                                </div>
+                                
+                                <!-- Stage 1: Denoising -->
+                                <div class="stage-item pending" id="stageDenoising">
+                                    <div class="stage-header">
+                                        <span class="stage-name">🎨 Stage 1: Denoising</span>
+                                        <span class="stage-status" id="stageDenoisingStatus">Pending</span>
+                                    </div>
+                                    <div class="stage-bar">
+                                        <div class="stage-fill stage1" id="stageDenoisingFill" style="width: 0%"></div>
+                                    </div>
+                                    <div class="stage-detail" id="stageDenoisingDetail"></div>
+                                </div>
+                                
+                                <!-- Stage 2: Refinement -->
+                                <div class="stage-item pending" id="stageRefinement">
+                                    <div class="stage-header">
+                                        <span class="stage-name">✨ Stage 2: Refinement</span>
+                                        <span class="stage-status" id="stageRefinementStatus">Pending</span>
+                                    </div>
+                                    <div class="stage-bar">
+                                        <div class="stage-fill stage2" id="stageRefinementFill" style="width: 0%"></div>
+                                    </div>
+                                    <div class="stage-detail" id="stageRefinementDetail"></div>
+                                </div>
+                                
+                                <!-- Stage 3: Encoding -->
+                                <div class="stage-item pending" id="stageEncoding">
+                                    <div class="stage-header">
+                                        <span class="stage-name">🎬 Video Encoding</span>
+                                        <span class="stage-status" id="stageEncodingStatus">Pending</span>
+                                    </div>
+                                    <div class="stage-bar">
+                                        <div class="stage-fill encoding" id="stageEncodingFill" style="width: 0%"></div>
+                                    </div>
+                                    <div class="stage-detail" id="stageEncodingDetail"></div>
+                                </div>
                             </div>
-                            <div class="progress-text" id="progressText">Waiting...</div>
                         </div>
                     </div>
 
@@ -1222,8 +1359,8 @@
                         <div class="label">GPU Memory</div>
                     </div>
                     <div class="health-item">
-                        <div class="value" id="healthQueue">0</div>
-                        <div class="label">Queue Size</div>
+                        <div class="value" id="healthGenerating">⚪</div>
+                        <div class="label">Generating</div>
                     </div>
                     <div class="health-item">
                         <div class="value" id="healthPipeline">-</div>
@@ -1232,22 +1369,6 @@
                 </div>
                 <button class="btn btn-secondary btn-sm" style="margin-top: 1rem;" onclick="refreshHealth()">
                     🔄 Refresh Status
-                </button>
-            </div>
-        </div>
-
-        <!-- Queue Tab -->
-        <div class="tab-content" id="queue-tab" style="display: none;">
-            <div class="card">
-                <h2>📋 Generation Queue</h2>
-                <p style="color: var(--text-secondary); margin-bottom: 1rem;">
-                    Jobs are processed one at a time. New requests wait in queue.
-                </p>
-                <div id="queueContainer">
-                    <div class="status status-info">No jobs in queue</div>
-                </div>
-                <button class="btn btn-secondary btn-sm" style="margin-top: 1rem;" onclick="refreshQueue()">
-                    🔄 Refresh Queue
                 </button>
             </div>
         </div>
@@ -1286,19 +1407,19 @@
                 </p>
                 
                 <div style="display: grid; gap: 1rem;">
-                    <!-- Generate Video -->
+                    <!-- Generate Video (SSE Streaming) -->
                     <div class="api-endpoint">
                         <div class="collapsible-header" onclick="toggleApiSection('api-generate')">
                             <div>
                                 <span class="badge" style="background: var(--accent-green); color: white;">POST</span>
                                 <code style="margin-left: 0.5rem;">/generate</code>
-                                <span style="color: var(--text-secondary); margin-left: 0.5rem;">— Submit a video generation job</span>
+                                <span style="color: var(--text-secondary); margin-left: 0.5rem;">— Generate video with SSE streaming</span>
                             </div>
                             <span id="api-generate-arrow">▼</span>
                         </div>
                         <div class="collapsible-content" id="api-generate-content">
                             <p style="color: var(--text-secondary); margin-bottom: 1rem;">
-                                Submit a video generation request. Jobs are queued and processed one at a time. Models are auto-downloaded if needed.
+                                Generate a video with real-time progress streaming via Server-Sent Events (SSE). Models are auto-downloaded if needed.
                             </p>
                             <h4 style="margin-bottom: 0.5rem;">Request Body</h4>
                             <pre style="background: var(--bg-dark); padding: 1rem; border-radius: 8px; overflow-x: auto; font-family: 'JetBrains Mono', monospace; font-size: 0.85rem;"><code>{
@@ -1315,46 +1436,19 @@
   "input_image_base64": "...",  // Optional: base64 image
   "image_strength": 1.0         // 0.0-1.0
 }</code></pre>
-                            <h4 style="margin-top: 1rem; margin-bottom: 0.5rem;">Example (curl)</h4>
-                            <pre style="background: var(--bg-dark); padding: 1rem; border-radius: 8px; overflow-x: auto; font-family: 'JetBrains Mono', monospace; font-size: 0.85rem;"><code>curl -X POST http://localhost:8000/generate \
-  -H "Content-Type: application/json" \
-  -d '{"prompt": "A cat walking through a sunlit garden"}'</code></pre>
-                            <h4 style="margin-top: 1rem; margin-bottom: 0.5rem;">Response</h4>
-                            <pre style="background: var(--bg-dark); padding: 1rem; border-radius: 8px; overflow-x: auto; font-family: 'JetBrains Mono', monospace; font-size: 0.85rem;"><code>{
-  "job_id": "abc123...",
-  "status": "queued",
-  "preset_name": "default",
-  "prompt": "A cat walking...",
-  "created_at": "2025-01-08T12:00:00",
-  "position_in_queue": 1
-}</code></pre>
-                        </div>
-                    </div>
-
-                    <!-- Get Job Status -->
-                    <div class="api-endpoint">
-                        <div class="collapsible-header" onclick="toggleApiSection('api-status')">
-                            <div>
-                                <span class="badge" style="background: var(--accent-purple); color: white;">GET</span>
-                                <code style="margin-left: 0.5rem;">/generate/{job_id}</code>
-                                <span style="color: var(--text-secondary); margin-left: 0.5rem;">— Get job status</span>
-                            </div>
-                            <span id="api-status-arrow">▼</span>
-                        </div>
-                        <div class="collapsible-content" id="api-status-content">
-                            <p style="color: var(--text-secondary); margin-bottom: 1rem;">
-                                Check the status of a generation job. Poll this endpoint to track progress.
-                            </p>
-                            <h4 style="margin-bottom: 0.5rem;">Status Values</h4>
+                            <h4 style="margin-top: 1rem; margin-bottom: 0.5rem;">SSE Events (text/event-stream)</h4>
                             <ul style="color: var(--text-secondary); margin-left: 1.5rem;">
-                                <li><code>queued</code> - Waiting in queue</li>
-                                <li><code>processing</code> - Currently generating</li>
-                                <li><code>completed</code> - Video ready for download</li>
-                                <li><code>failed</code> - Generation failed (see error_message)</li>
-                                <li><code>cancelled</code> - Job was cancelled</li>
+                                <li><code>init</code> - Job initialized with job_id</li>
+                                <li><code>stage</code> - Current stage (loading, stage_1, stage_2, encoding)</li>
+                                <li><code>step</code> - Denoising step progress within stage</li>
+                                <li><code>complete</code> - Generation finished with download URL</li>
+                                <li><code>error</code> - Generation failed with error message</li>
                             </ul>
-                            <h4 style="margin-top: 1rem; margin-bottom: 0.5rem;">Example</h4>
-                            <pre style="background: var(--bg-dark); padding: 1rem; border-radius: 8px; overflow-x: auto; font-family: 'JetBrains Mono', monospace; font-size: 0.85rem;"><code>curl http://localhost:8000/generate/abc123-def456</code></pre>
+                            <h4 style="margin-top: 1rem; margin-bottom: 0.5rem;">Example Event Data</h4>
+                            <pre style="background: var(--bg-dark); padding: 1rem; border-radius: 8px; overflow-x: auto; font-family: 'JetBrains Mono', monospace; font-size: 0.85rem;"><code>data: {"type": "init", "job_id": "abc123..."}
+data: {"type": "stage", "stage": "stage_1", "message": "Stage 1: Generating..."}
+data: {"type": "step", "stage": "Stage 1 Denoising", "step": 3, "total": 8, "percentage": 37.5}
+data: {"type": "complete", "job_id": "abc123...", "download_url": "/generate/abc123.../download"}</code></pre>
                         </div>
                     </div>
 
@@ -1433,7 +1527,7 @@
                         </div>
                         <div class="collapsible-content" id="api-health-content">
                             <p style="color: var(--text-secondary); margin-bottom: 1rem;">
-                                Check system status: CUDA availability, GPU info, queue size, pipeline status.
+                                Check system status: CUDA availability, GPU info, and pipeline status.
                             </p>
                             <h4 style="margin-bottom: 0.5rem;">Response</h4>
                             <pre style="background: var(--bg-dark); padding: 1rem; border-radius: 8px; overflow-x: auto; font-family: 'JetBrains Mono', monospace; font-size: 0.85rem;"><code>{
@@ -1442,8 +1536,7 @@
   "gpu_name": "NVIDIA RTX 4090",
   "gpu_memory_gb": 24.0,
   "pipeline_loaded": true,
-  "queue_size": 0,
-  "current_job": null
+  "is_generating": false
 }</code></pre>
                         </div>
                     </div>
@@ -1452,13 +1545,13 @@
 
             <!-- Python Example -->
             <div class="card">
-                <h2>🐍 Python Example</h2>
+                <h2>🐍 Python Example (SSE Streaming)</h2>
                 <pre style="background: var(--bg-dark); padding: 1rem; border-radius: 8px; overflow-x: auto; font-family: 'JetBrains Mono', monospace; font-size: 0.85rem;"><code>import requests
-import time
+import json
 
 API_URL = "http://localhost:8000"
 
-# Submit generation job
+# Stream generation with real-time progress
 response = requests.post(f"{API_URL}/generate", json={
     "prompt": "A majestic eagle soaring over mountains at sunset",
     "height": 1024,
@@ -1466,28 +1559,29 @@ response = requests.post(f"{API_URL}/generate", json={
     "num_frames": 121,
     "frame_rate": 24,
     "seed": 42
-})
-job = response.json()
-job_id = job["job_id"]
-print(f"Job submitted: {job_id}")
+}, stream=True)
 
-# Poll for completion
-while True:
-    status = requests.get(f"{API_URL}/generate/{job_id}").json()
-    print(f"Status: {status['status']}")
-    
-    if status["status"] == "completed":
-        # Download video
-        video = requests.get(f"{API_URL}/generate/{job_id}/download")
-        with open("output.mp4", "wb") as f:
-            f.write(video.content)
-        print("Video saved to output.mp4")
-        break
-    elif status["status"] == "failed":
-        print(f"Error: {status['error_message']}")
-        break
-    
-    time.sleep(5)  # Poll every 5 seconds</code></pre>
+job_id = None
+for line in response.iter_lines():
+    if line and line.startswith(b"data: "):
+        data = json.loads(line[6:])
+        
+        if data["type"] == "init":
+            job_id = data["job_id"]
+            print(f"Job started: {job_id}")
+        elif data["type"] == "stage":
+            print(f"Stage: {data['message']}")
+        elif data["type"] == "step":
+            print(f"  {data['stage']}: {data['step']}/{data['total']} ({data['percentage']}%)")
+        elif data["type"] == "complete":
+            print("Generation complete!")
+            # Download video
+            video = requests.get(f"{API_URL}/generate/{job_id}/download")
+            with open("output.mp4", "wb") as f:
+                f.write(video.content)
+            print("Video saved to output.mp4")
+        elif data["type"] == "error":
+            print(f"Error: {data['message']}")</code></pre>
             </div>
         </div>
 
@@ -1986,8 +2080,6 @@ while True:
                 if (tab.dataset.tab === 'models') {
                     refreshModels();
                     refreshHealth();
-                } else if (tab.dataset.tab === 'queue') {
-                    refreshQueue();
                 } else if (tab.dataset.tab === 'presets') {
                     refreshPresets();
                 }
@@ -2232,44 +2324,152 @@ while True:
                 const health = await apiCall('/health');
                 document.getElementById('healthCuda').textContent = health.cuda_available ? '✅' : '❌';
                 document.getElementById('healthGpu').textContent = health.gpu_memory_gb ? `${health.gpu_memory_gb} GB` : 'N/A';
-                document.getElementById('healthQueue').textContent = health.queue_size;
+                document.getElementById('healthGenerating').textContent = health.is_generating ? '🟢' : '⚪';
                 document.getElementById('healthPipeline').textContent = health.pipeline_loaded ? '✅' : '❌';
             } catch (error) {
                 console.error('Health check failed:', error);
             }
         }
 
-        // Queue
-        async function refreshQueue() {
-            // Queue info would come from tracking jobs - for now show current job
-            const container = document.getElementById('queueContainer');
-            if (currentJobId) {
-                try {
-                    const job = await apiCall(`/generate/${currentJobId}`);
-                    container.innerHTML = `
-                        <div class="queue-item">
-                            <span class="job-id">${job.job_id.substring(0, 8)}...</span>
-                            <span class="badge ${job.status === 'completed' ? 'badge-ready' : job.status === 'processing' ? 'badge-downloading' : 'badge-missing'}">
-                                ${job.status}
-                            </span>
-                        </div>
-                    `;
-                } catch (error) {
-                    container.innerHTML = '<div class="status status-info">No jobs in queue</div>';
+
+        // Video Generation with SSE Streaming
+        let eventSource = null;
+        
+        // Stage tracking state
+        let stageState = {
+            loading: { active: false, completed: false, step: 0, total: 0 },
+            denoising: { active: false, completed: false, step: 0, total: 8 },
+            refinement: { active: false, completed: false, step: 0, total: 3 },
+            encoding: { active: false, completed: false, step: 0, total: 3 }
+        };
+        
+        let generationStartTime = null;
+        
+        function resetStageState() {
+            generationStartTime = Date.now();
+            stageState = {
+                loading: { active: false, completed: false, step: 0, total: 0 },
+                denoising: { active: false, completed: false, step: 0, total: 8 },
+                refinement: { active: false, completed: false, step: 0, total: 3 },
+                encoding: { active: false, completed: false, step: 0, total: 3 }
+            };
+            
+            // Reset UI
+            ['Loading', 'Denoising', 'Refinement', 'Encoding'].forEach(stage => {
+                const el = document.getElementById(`stage${stage}`);
+                const fill = document.getElementById(`stage${stage}Fill`);
+                const status = document.getElementById(`stage${stage}Status`);
+                const detail = document.getElementById(`stage${stage}Detail`);
+                
+                if (el) {
+                    el.className = 'stage-item pending';
+                    if (stage === 'Loading') el.style.display = 'none';
                 }
-            } else {
-                container.innerHTML = '<div class="status status-info">No jobs in queue</div>';
+                if (fill) fill.style.width = '0%';
+                if (status) { status.textContent = 'Pending'; status.className = 'stage-status'; }
+                if (detail) detail.textContent = '';
+            });
+        }
+        
+        function updateStageUI(stageName, step, total, percentage, elapsed, remaining, rate) {
+            const stageMap = {
+                'Loading Models': 'Loading',
+                'Stage 1: Denoising': 'Denoising',
+                'Stage 2: Refinement': 'Refinement',
+                'Video Encoding': 'Encoding'
+            };
+            
+            const stageKey = stageMap[stageName] || stageName;
+            const stateKey = stageKey.toLowerCase();
+            
+            // Show loading stage if it appears
+            if (stageKey === 'Loading') {
+                document.getElementById('stageLoading').style.display = 'block';
+            }
+            
+            // Mark previous stages as completed (only if they were active before)
+            const stageOrder = ['loading', 'denoising', 'refinement', 'encoding'];
+            const currentIdx = stageOrder.indexOf(stateKey);
+            stageOrder.forEach((s, idx) => {
+                // Only mark as completed if:
+                // 1. It's before the current stage
+                // 2. It was previously active (meaning it ran)
+                // 3. It's not already completed
+                if (idx < currentIdx && stageState[s].active && !stageState[s].completed) {
+                    stageState[s].completed = true;
+                    stageState[s].active = false;
+                    const el = document.getElementById(`stage${s.charAt(0).toUpperCase() + s.slice(1)}`);
+                    const fill = document.getElementById(`stage${s.charAt(0).toUpperCase() + s.slice(1)}Fill`);
+                    const status = document.getElementById(`stage${s.charAt(0).toUpperCase() + s.slice(1)}Status`);
+                    const detail = document.getElementById(`stage${s.charAt(0).toUpperCase() + s.slice(1)}Detail`);
+                    if (el) el.className = 'stage-item completed';
+                    if (fill) fill.style.width = '100%';
+                    if (status) { status.textContent = '✓ Complete'; status.className = 'stage-status completed'; }
+                    // Preserve final time in detail if stored
+                    if (detail && stageState[s].finalTime) {
+                        detail.textContent = stageState[s].finalTime;
+                    }
+                }
+            });
+            
+            // Update current stage
+            if (stageState[stateKey]) {
+                // If this stage wasn't active before, we're starting fresh
+                const wasActive = stageState[stateKey].active;
+                
+                // If this is the first event for this stage and it's already at 100%,
+                // this is likely a timing issue - skip this event for new stages
+                if (!wasActive && percentage >= 100) {
+                    console.log(`Skipping 100% event for new stage ${stageName}`);
+                    return;
+                }
+                
+                stageState[stateKey].active = true;
+                stageState[stateKey].step = step;
+                stageState[stateKey].total = total;
+                
+                const el = document.getElementById(`stage${stageKey.charAt(0).toUpperCase() + stageKey.slice(1)}`);
+                const fill = document.getElementById(`stage${stageKey.charAt(0).toUpperCase() + stageKey.slice(1)}Fill`);
+                const status = document.getElementById(`stage${stageKey.charAt(0).toUpperCase() + stageKey.slice(1)}Status`);
+                const detail = document.getElementById(`stage${stageKey.charAt(0).toUpperCase() + stageKey.slice(1)}Detail`);
+                
+                if (el) el.className = 'stage-item active';
+                if (fill) fill.style.width = `${percentage}%`;
+                if (status) { status.textContent = `${step}/${total}`; status.className = 'stage-status active'; }
+                
+                // Build detail text with time info
+                let detailText = `Step ${step} of ${total}`;
+                if (elapsed) {
+                    detailText += ` • ${elapsed}`;
+                    if (remaining && remaining !== '00:00' && remaining !== '?') {
+                        detailText += ` → ${remaining} left`;
+                    }
+                }
+                if (rate) {
+                    detailText += ` (${rate})`;
+                }
+                if (detail) detail.textContent = detailText;
+                
+                // Mark as completed if 100%
+                if (percentage >= 100) {
+                    stageState[stateKey].completed = true;
+                    stageState[stateKey].active = false;
+                    // Store final time for display
+                    if (elapsed) {
+                        stageState[stateKey].finalTime = `Completed in ${elapsed}`;
+                        if (detail) detail.textContent = `Completed in ${elapsed}`;
+                    }
+                    if (el) el.className = 'stage-item completed';
+                    if (status) { status.textContent = '✓ Complete'; status.className = 'stage-status completed'; }
+                }
             }
         }
-
-        // Video Generation
+        
         async function generateVideo() {
             const btn = document.getElementById('generateBtn');
             const statusCard = document.getElementById('statusCard');
             const statusContent = document.getElementById('statusContent');
             const progressContainer = document.getElementById('progressContainer');
-            const progressFill = document.getElementById('progressFill');
-            const progressText = document.getElementById('progressText');
 
             const prompt = document.getElementById('prompt').value.trim();
             if (!prompt) {
@@ -2281,6 +2481,18 @@ while True:
             btn.innerHTML = '<span class="spinner"></span> Generating...';
             statusCard.style.display = 'block';
             progressContainer.style.display = 'block';
+            
+            // Reset stage tracking
+            resetStageState();
+            
+            let pipelineInfo = null;
+            let currentStage = null;
+            
+            // Close any existing event source
+            if (eventSource) {
+                eventSource.close();
+                eventSource = null;
+            }
 
             try {
                 // Collect image inputs
@@ -2289,16 +2501,15 @@ while True:
                 let imageStrength = parseFloat(document.getElementById('imageStrength').value) || 1.0;
                 
                 // For now, use the first image as the primary conditioning image
-                // (The API currently supports single image input via base64)
                 if (imageInputs.length > 0) {
                     statusContent.innerHTML = '<div class="status status-info">Processing image...</div>';
                     inputImageBase64 = await fileToBase64(imageInputs[0].file);
                     imageStrength = imageInputs[0].strength;
                 }
                 
-                // Submit job
+                // Prepare request body
                 const preset = document.getElementById('presetSelect').value;
-                const job = await apiCall('/generate', 'POST', {
+                const requestBody = {
                     preset_name: preset || null,
                     prompt,
                     negative_prompt: document.getElementById('negativePrompt').value,
@@ -2311,53 +2522,149 @@ while True:
                     seed: parseInt(document.getElementById('seed').value),
                     input_image_base64: inputImageBase64,
                     image_strength: imageStrength
+                };
+                
+                statusContent.innerHTML = '<div class="status status-info">Starting generation...</div>';
+                
+                // Use fetch with SSE streaming
+                const response = await fetch('/generate', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(requestBody)
                 });
-
-                currentJobId = job.job_id;
-                statusContent.innerHTML = `<div class="status status-info">Job submitted: ${job.job_id.substring(0, 8)}...</div>`;
-                progressText.textContent = 'Queued...';
-                progressFill.style.width = '10%';
-
-                // Poll for status
-                pollInterval = setInterval(async () => {
-                    try {
-                        const status = await apiCall(`/generate/${currentJobId}`);
-                        
-                        if (status.status === 'processing') {
-                            progressFill.style.width = '50%';
-                            progressText.textContent = 'Generating video...';
-                            statusContent.innerHTML = `<div class="status status-warning">Processing...</div>`;
-                        } else if (status.status === 'completed') {
-                            clearInterval(pollInterval);
-                            progressFill.style.width = '100%';
-                            progressText.textContent = 'Complete!';
-                            statusContent.innerHTML = `<div class="status status-success">Video generated successfully!</div>`;
-                            
-                            // Show video
-                            const videoContainer = document.getElementById('videoContainer');
-                            videoContainer.innerHTML = `<video controls autoplay><source src="/generate/${currentJobId}/download" type="video/mp4"></video>`;
-                            document.getElementById('downloadBtn').style.display = 'inline-flex';
-                            
-                            btn.disabled = false;
-                            btn.innerHTML = '🚀 Generate Video';
-                        } else if (status.status === 'failed') {
-                            clearInterval(pollInterval);
-                            progressFill.style.width = '0%';
-                            statusContent.innerHTML = `<div class="status status-error">Failed: ${status.error_message || 'Unknown error'}</div>`;
-                            
-                            btn.disabled = false;
-                            btn.innerHTML = '🚀 Generate Video';
+                
+                if (!response.ok) {
+                    const error = await response.json();
+                    throw new Error(error.detail || 'Failed to start generation');
+                }
+                
+                // Read the stream
+                const reader = response.body.getReader();
+                const decoder = new TextDecoder();
+                let buffer = '';
+                let pipelineInfo = null;
+                let currentStage = null;
+                
+                while (true) {
+                    const { done, value } = await reader.read();
+                    if (done) break;
+                    
+                    buffer += decoder.decode(value, { stream: true });
+                    
+                    // Process complete SSE messages
+                    const lines = buffer.split('\n\n');
+                    buffer = lines.pop() || '';
+                    
+                    for (const line of lines) {
+                        if (line.startsWith('data: ')) {
+                            try {
+                                const data = JSON.parse(line.slice(6));
+                                handleProgressEvent(data, btn, statusContent);
+                                
+                                // Update tracking vars
+                                if (data.type === 'info') pipelineInfo = data;
+                                if (data.type === 'stage') currentStage = data.stage;
+                                if (data.type === 'init') currentJobId = data.job_id;
+                                
+                                // Exit on completion or error
+                                if (data.type === 'complete' || data.type === 'error' || data.type === 'done') {
+                                    if (data.type === 'complete') {
+                                        // Show video
+                                        const videoContainer = document.getElementById('videoContainer');
+                                        videoContainer.innerHTML = `<video controls autoplay><source src="/generate/${currentJobId}/download" type="video/mp4"></video>`;
+                                        document.getElementById('downloadBtn').style.display = 'inline-flex';
+                                    }
+                                    btn.disabled = false;
+                                    btn.innerHTML = '🚀 Generate Video';
+                                }
+                            } catch (e) {
+                                console.error('Parse error:', e, line);
+                            }
                         }
-                    } catch (error) {
-                        console.error('Poll error:', error);
                     }
-                }, 2000);
+                }
 
             } catch (error) {
-                statusContent.innerHTML = `<div class="status status-error">${error.message || 'Failed to submit job'}</div>`;
+                statusContent.innerHTML = `<div class="status status-error">${error.message || 'Failed to start generation'}</div>`;
                 progressContainer.style.display = 'none';
                 btn.disabled = false;
                 btn.innerHTML = '🚀 Generate Video';
+            }
+        }
+        
+        function handleProgressEvent(data, btn, statusContent) {
+            switch (data.type) {
+                case 'init':
+                    statusContent.innerHTML = `<div class="status status-info" style="padding: 0.5rem 1rem; font-size: 0.85rem;">🚀 Generating video...</div>`;
+                    break;
+                    
+                case 'info':
+                    // Store pipeline info in a compact display
+                    const infoHtml = `
+                        <div class="status status-info" style="padding: 0.5rem 1rem; font-size: 0.85rem;">
+                            🎬 ${data.pipeline} • ${data.resolution} • ${data.num_frames} frames
+                        </div>`;
+                    statusContent.innerHTML = infoHtml;
+                    break;
+                    
+                case 'stage':
+                    // Stage events from the API - update status message
+                    if (data.stage === 'encoding') {
+                        statusContent.innerHTML = `<div class="status status-info" style="padding: 0.5rem 1rem; font-size: 0.85rem;">📹 Encoding video...</div>`;
+                    }
+                    break;
+                    
+                case 'step':
+                    // Update individual stage progress using the new UI
+                    updateStageUI(data.stage, data.step, data.total, data.percentage, data.elapsed, data.remaining, data.rate);
+                    break;
+                    
+                case 'stage_complete':
+                    console.log(`Stage complete: ${data.stage}`);
+                    break;
+                    
+                case 'complete':
+                    // Calculate total generation time
+                    let totalTimeStr = '';
+                    if (generationStartTime) {
+                        const totalMs = Date.now() - generationStartTime;
+                        const totalSec = Math.floor(totalMs / 1000);
+                        const mins = Math.floor(totalSec / 60);
+                        const secs = totalSec % 60;
+                        totalTimeStr = mins > 0 ? `${mins}m ${secs}s` : `${secs}s`;
+                    }
+                    
+                    // Mark all stages as complete
+                    ['Loading', 'Denoising', 'Refinement', 'Encoding'].forEach(stage => {
+                        const el = document.getElementById(`stage${stage}`);
+                        const fill = document.getElementById(`stage${stage}Fill`);
+                        const status = document.getElementById(`stage${stage}Status`);
+                        if (el && el.style.display !== 'none' && !el.classList.contains('pending')) {
+                            el.className = 'stage-item completed';
+                            if (fill) fill.style.width = '100%';
+                            if (status) { status.textContent = '✓ Complete'; status.className = 'stage-status completed'; }
+                        }
+                    });
+                    
+                    const successMsg = totalTimeStr 
+                        ? `✅ Video generated successfully in ${totalTimeStr}!`
+                        : `✅ Video generated successfully!`;
+                    statusContent.innerHTML = `<div class="status status-success" style="padding: 0.75rem 1rem;">${successMsg}</div>`;
+                    showToast(successMsg, 'success');
+                    break;
+                    
+                case 'error':
+                    statusContent.innerHTML = `<div class="status status-error">Failed: ${data.message || 'Unknown error'}</div>`;
+                    showToast('Generation failed: ' + (data.message || 'Unknown error'), 'error');
+                    break;
+                    
+                case 'keepalive':
+                    // Just a heartbeat, ignore
+                    break;
+                    
+                case 'done':
+                    // Generation process finished
+                    break;
             }
         }
 

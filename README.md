@@ -19,8 +19,9 @@ A beautiful web interface and REST API for [Lightricks LTX-2](https://github.com
 - **🔊 Audio-Video Sync** - Synchronized audio generation
 - **📺 Native 4K** - Up to 4K resolution at 50 FPS
 - **⚡ Fast Inference** - Distilled pipeline with only 8 steps
+- **📊 Real-Time Progress** - SSE streaming with per-stage progress bars and timing info
 - **💾 Preset System** - Save and load generation settings
-- **🔌 REST API** - Full-featured FastAPI service for integration
+- **🔌 REST API** - Full-featured FastAPI service with SSE streaming
 - **🧠 VRAM Caching** - Models stay in memory for faster subsequent generations
 - **📦 Auto-Download** - All models downloaded automatically
 
@@ -62,7 +63,13 @@ Access the web interface at **http://localhost:8000**
 Features:
 - Beautiful dark theme with gradient accents
 - Generation mode selector (Fast, Quality, Image-to-Video, etc.)
-- Real-time generation status with progress
+- **Real-time progress with individual stage tracking:**
+  - 🔄 Loading Models (on cold start)
+  - 🎨 Stage 1: Denoising (8 steps)
+  - ✨ Stage 2: Refinement (3 steps)
+  - 🎬 Video Encoding
+  - Shows elapsed time, remaining time, and rate per stage
+  - Total generation time displayed on completion
 - Preset management (save/load/delete)
 - Model management with on-demand downloads
 - Full API documentation built into the UI
@@ -74,26 +81,12 @@ Full interactive API documentation at **http://localhost:8000/docs** (Swagger UI
 **Quick Examples:**
 
 ```bash
-# Generate a video using default preset
+# Generate a video (SSE streaming response)
 curl -X POST http://localhost:8000/generate \
   -H "Content-Type: application/json" \
   -d '{"prompt": "A beautiful sunset over the ocean"}'
 
-# Generate with custom settings
-curl -X POST http://localhost:8000/generate \
-  -H "Content-Type: application/json" \
-  -d '{
-    "prompt": "A cat walking through a garden",
-    "height": 1024,
-    "width": 1536,
-    "num_frames": 121,
-    "seed": 42
-  }'
-
-# Check job status
-curl http://localhost:8000/generate/{job_id}
-
-# Download completed video
+# Download completed video (job_id from SSE response)
 curl http://localhost:8000/generate/{job_id}/download -o video.mp4
 
 # List all presets
@@ -102,6 +95,51 @@ curl http://localhost:8000/presets
 # Check system health
 curl http://localhost:8000/health
 ```
+
+**Python SSE Streaming Example:**
+
+```python
+import requests
+import json
+
+API_URL = "http://localhost:8000"
+
+response = requests.post(
+    f"{API_URL}/generate",
+    json={"prompt": "A cat walking through a garden"},
+    stream=True
+)
+
+job_id = None
+for line in response.iter_lines():
+    if line.startswith(b"data: "):
+        data = json.loads(line[6:])
+        
+        if data["type"] == "init":
+            job_id = data["job_id"]
+            print(f"Job started: {job_id}")
+        elif data["type"] == "step":
+            print(f"  {data['stage']}: {data['step']}/{data['total']} ({data.get('elapsed', '')})")
+        elif data["type"] == "complete":
+            print(f"✅ Done! Download: {API_URL}{data['download_url']}")
+            break
+
+# Download video
+if job_id:
+    video = requests.get(f"{API_URL}/generate/{job_id}/download")
+    with open("video.mp4", "wb") as f:
+        f.write(video.content)
+```
+
+**SSE Event Types:**
+
+| Event | Description |
+|-------|-------------|
+| `init` | Job initialized with `job_id` |
+| `info` | Pipeline info (type, resolution, frames) |
+| `step` | Progress update with stage, step/total, elapsed/remaining time |
+| `complete` | Generation finished with `download_url` |
+| `error` | Generation failed with error message |
 
 ### Gradio WebUI (Alternative)
 

@@ -1,10 +1,10 @@
 """
 LTX-2 FastAPI Service
-RESTful API for video generation with preset support.
+RESTful API for video generation with preset support and real-time SSE streaming.
 
 Features:
 - Generate videos using presets or custom settings
-- Thread-safe generation queue (one generation at a time)
+- Real-time progress streaming via Server-Sent Events (SSE)
 - Preset management (CRUD operations)
 - Health check and status endpoints
 
@@ -22,19 +22,16 @@ import uuid
 import base64
 import asyncio
 import threading
+import json
+import io
 from pathlib import Path
 from typing import Optional, List, Dict, Any
-from datetime import datetime
-from dataclasses import dataclass, field
-from enum import Enum
 from contextlib import asynccontextmanager
-from queue import Queue
 from concurrent.futures import ThreadPoolExecutor
 
 import torch
-from fastapi import FastAPI, HTTPException, BackgroundTasks, File, UploadFile, Form
-from fastapi.responses import FileResponse, JSONResponse, HTMLResponse
-from fastapi.staticfiles import StaticFiles
+from fastapi import FastAPI, HTTPException, BackgroundTasks
+from fastapi.responses import FileResponse, HTMLResponse, StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 from huggingface_hub import hf_hub_download
@@ -51,6 +48,289 @@ MODELS_DIR = Path("./models")
 OUTPUTS_DIR = Path("./outputs")
 TEMPLATES_DIR = Path("./templates")
 HF_REPO_ID = "Lightricks/LTX-2"
+
+# ============================================================================
+# Progress Callback System for SSE Streaming
+# ============================================================================
+
+# Thread-local storage for progress callbacks
+_progress_callbacks = threading.local()
+
+def get_progress_callback():
+    """Get the current thread's progress callback."""
+    return getattr(_progress_callbacks, 'callback', None)
+
+def set_progress_callback(callback):
+    """Set the current thread's progress callback."""
+    _progress_callbacks.callback = callback
+
+import re
+import sys
+
+
+class OutputCapture:
+    """Capture stdout/stderr and parse tqdm progress for SSE streaming.
+    
+    For distilled pipeline, the stages are:
+    - Stage 1: Denoising at half resolution (8 steps with DISTILLED_SIGMA_VALUES)
+    - Stage 2: Refinement at full resolution (3 steps with STAGE_2_DISTILLED_SIGMA_VALUES)
+    - Encoding: Video encoding into MP4 (variable chunks based on frame count)
+    """
+    
+    # Shared state across stdout/stderr captures
+    _shared_state = {}
+    
+    def __init__(self, progress_callback, original_stream, capture_id):
+        self.progress_callback = progress_callback
+        self.original_stream = original_stream
+        self.capture_id = capture_id
+        
+        # Initialize shared state for this capture session
+        if capture_id not in OutputCapture._shared_state:
+            OutputCapture._shared_state[capture_id] = {
+                "completed_stages": [],  # Track (total,) tuples when 100% hit
+                "last_total": None,
+            }
+        
+        # tqdm patterns - matches progress like "  5%|███  | 1/8 [00:01<00:05, 1.25it/s]"
+        # Extended pattern to capture time info: [elapsed<remaining, rate]
+        self.tqdm_pattern = re.compile(r'^\s*(\d+)%\|.*?\|\s*(\d+)/(\d+)\s*\[([^\]]+)\]')
+        # Fallback without time info
+        self.tqdm_pattern_simple = re.compile(r'^\s*(\d+)%\|.*?\|\s*(\d+)/(\d+)')
+        # Alternative pattern for simpler tqdm output
+        self.tqdm_simple = re.compile(r'(\d+)/(\d+)\s+\[([^\]]+)\]')
+    
+    @property
+    def state(self):
+        return OutputCapture._shared_state[self.capture_id]
+    
+    def _determine_stage(self, total, percentage):
+        """Determine stage name based on total steps and progress history.
+        
+        For distilled pipeline on cold start:
+        - First 3-step loop (before 8): Loading Models (checkpoint shards)
+        - 8-step loop: Stage 1 Denoising (half resolution)
+        - First 3-step loop (after 8): Stage 2 Refinement (upsampled, full resolution)
+        - Second 3-step loop (after 8): Video Encoding (frame chunks)
+        
+        Console output pattern on cold start:
+        100%|##| 3/3 → Loading Models (checkpoint shards)
+        100%|##| 8/8 → Stage 1: Denoising
+        100%|##| 3/3 → Stage 2: Refinement  
+        100%|##| 3/3 → Video Encoding
+        """
+        completed = self.state["completed_stages"]
+        
+        # 8 steps = Always Stage 1 Denoising
+        if total == 8:
+            return "Stage 1: Denoising"
+        
+        # Check if Stage 1 (8 steps) has been seen/completed
+        has_seen_stage1 = 8 in completed or self.state.get("seen_8_step", False)
+        
+        # Track if we've seen the 8-step loop (even before it completes)
+        if total == 8:
+            self.state["seen_8_step"] = True
+        
+        # For 3-step loops, differentiate by position relative to Stage 1
+        if total == 3:
+            if not has_seen_stage1:
+                # 3-step loop BEFORE Stage 1 = Model Loading (checkpoint shards)
+                return "Loading Models"
+            
+            # Count how many 3-step loops have completed AFTER Stage 1
+            # We only count 3-step completions that happened after the 8-step
+            try:
+                stage1_idx = completed.index(8)
+                # Count 3s that appear after the 8
+                three_step_after_stage1 = completed[stage1_idx + 1:].count(3)
+            except ValueError:
+                # 8 not yet in completed, but we've seen it - count all 3s
+                three_step_after_stage1 = completed.count(3)
+            
+            if three_step_after_stage1 == 0:
+                # First 3-step loop after Stage 1 = Stage 2
+                return "Stage 2: Refinement"
+            else:
+                # Second or later 3-step loop after Stage 1 = Video Encoding
+                return "Video Encoding"
+        
+        # For other totals
+        if not has_seen_stage1:
+            return "Loading Models"
+        elif len(completed) >= 2:
+            return "Video Encoding"
+        else:
+            return "Processing"
+    
+    def write(self, text):
+        # Also write to original stream
+        self.original_stream.write(text)
+        
+        # Try to parse tqdm progress
+        if text.strip():
+            self._parse_progress(text)
+    
+    def _parse_time_info(self, time_str):
+        """Parse tqdm time info like '00:08<00:00, 1.04s/it' into structured data."""
+        time_info = {"elapsed": None, "remaining": None, "rate": None}
+        try:
+            # Split by comma to get elapsed<remaining and rate
+            parts = time_str.split(',')
+            if parts:
+                # Parse elapsed<remaining
+                time_part = parts[0].strip()
+                if '<' in time_part:
+                    elapsed, remaining = time_part.split('<')
+                    time_info["elapsed"] = elapsed.strip()
+                    time_info["remaining"] = remaining.strip()
+                # Parse rate (e.g., "1.04s/it" or "1.25it/s")
+                if len(parts) > 1:
+                    time_info["rate"] = parts[1].strip()
+        except Exception:
+            pass
+        return time_info
+    
+    def _parse_progress(self, text):
+        # Check for tqdm progress pattern with time info
+        match = self.tqdm_pattern.search(text)
+        if match:
+            percentage = int(match.group(1))
+            current = int(match.group(2))
+            total = int(match.group(3))
+            time_str = match.group(4)
+            time_info = self._parse_time_info(time_str)
+            
+            # Track when we first see an 8-step loop (Stage 1 starting)
+            if total == 8 and not self.state.get("seen_8_step", False):
+                self.state["seen_8_step"] = True
+            
+            stage = self._determine_stage(total, percentage)
+            
+            # Track when we hit 100% (stage completion)
+            if percentage >= 100 and current >= total:
+                # Only record if this is a new completion (not duplicate 100%)
+                last_completed = self.state.get("last_completed")
+                if last_completed != total:
+                    self.state["completed_stages"].append(total)
+                    self.state["last_completed"] = total
+            else:
+                # Reset last_completed when we see a new progress (not 100%)
+                self.state["last_completed"] = None
+            
+            self.state["last_total"] = total
+            
+            self.progress_callback({
+                "type": "step",
+                "stage": stage,
+                "step": current,
+                "total": total,
+                "percentage": percentage,
+                "elapsed": time_info.get("elapsed"),
+                "remaining": time_info.get("remaining"),
+                "rate": time_info.get("rate")
+            })
+            return
+        
+        # Try fallback pattern without time
+        match = self.tqdm_pattern_simple.search(text)
+        if match:
+            percentage = int(match.group(1))
+            current = int(match.group(2))
+            total = int(match.group(3))
+            
+            if total == 8 and not self.state.get("seen_8_step", False):
+                self.state["seen_8_step"] = True
+            
+            stage = self._determine_stage(total, percentage)
+            
+            if percentage >= 100 and current >= total:
+                last_completed = self.state.get("last_completed")
+                if last_completed != total:
+                    self.state["completed_stages"].append(total)
+                    self.state["last_completed"] = total
+            else:
+                self.state["last_completed"] = None
+            
+            self.state["last_total"] = total
+            
+            self.progress_callback({
+                "type": "step",
+                "stage": stage,
+                "step": current,
+                "total": total,
+                "percentage": percentage
+            })
+            return
+        
+        # Try simple pattern with time
+        match = self.tqdm_simple.search(text)
+        if match:
+            current = int(match.group(1))
+            total = int(match.group(2))
+            time_str = match.group(3)
+            time_info = self._parse_time_info(time_str)
+            percentage = round(current / total * 100, 1) if total > 0 else 0
+            
+            # Track when we first see an 8-step loop
+            if total == 8 and not self.state.get("seen_8_step", False):
+                self.state["seen_8_step"] = True
+            
+            stage = self._determine_stage(total, percentage)
+            
+            # Track when we hit 100%
+            if current >= total:
+                last_completed = self.state.get("last_completed")
+                if last_completed != total:
+                    self.state["completed_stages"].append(total)
+                    self.state["last_completed"] = total
+            else:
+                self.state["last_completed"] = None
+            
+            self.state["last_total"] = total
+            
+            self.progress_callback({
+                "type": "step",
+                "stage": stage,
+                "step": current,
+                "total": total,
+                "percentage": percentage,
+                "elapsed": time_info.get("elapsed"),
+                "remaining": time_info.get("remaining"),
+                "rate": time_info.get("rate")
+            })
+    
+    def flush(self):
+        self.original_stream.flush()
+    
+    def isatty(self):
+        return self.original_stream.isatty()
+
+
+class OutputCaptureContext:
+    """Context manager to capture stdout/stderr during generation."""
+    
+    def __init__(self, progress_callback):
+        self.progress_callback = progress_callback
+        self.original_stdout = None
+        self.original_stderr = None
+        # Unique capture ID for this context (shared between stdout/stderr)
+        self.capture_id = id(self)
+    
+    def __enter__(self):
+        self.original_stdout = sys.stdout
+        self.original_stderr = sys.stderr
+        sys.stdout = OutputCapture(self.progress_callback, self.original_stdout, self.capture_id)
+        sys.stderr = OutputCapture(self.progress_callback, self.original_stderr, self.capture_id)
+        return self
+    
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        sys.stdout = self.original_stdout
+        sys.stderr = self.original_stderr
+        # Clean up shared state
+        if self.capture_id in OutputCapture._shared_state:
+            del OutputCapture._shared_state[self.capture_id]
+        return False
 
 # Available checkpoints from HuggingFace
 CHECKPOINTS = {
@@ -241,14 +521,6 @@ def auto_download_required_models(preset) -> tuple:
 # Pydantic Models for API
 # ============================================================================
 
-class GenerationStatus(str, Enum):
-    QUEUED = "queued"
-    PROCESSING = "processing"
-    COMPLETED = "completed"
-    FAILED = "failed"
-    CANCELLED = "cancelled"
-
-
 class GenerationRequest(BaseModel):
     """Request model for video generation."""
     preset_name: Optional[str] = Field(
@@ -270,20 +542,6 @@ class GenerationRequest(BaseModel):
     # Image conditioning (base64 encoded)
     input_image_base64: Optional[str] = Field(default=None, description="Base64 encoded input image")
     image_strength: Optional[float] = Field(default=None, ge=0.0, le=1.0, description="Image strength")
-
-
-class GenerationJob(BaseModel):
-    """A generation job with status."""
-    job_id: str
-    status: GenerationStatus
-    preset_name: str
-    prompt: str
-    created_at: str
-    started_at: Optional[str] = None
-    completed_at: Optional[str] = None
-    output_path: Optional[str] = None
-    error_message: Optional[str] = None
-    position_in_queue: Optional[int] = None
 
 
 class PresetCreate(BaseModel):
@@ -345,42 +603,23 @@ class HealthResponse(BaseModel):
     gpu_name: Optional[str]
     gpu_memory_gb: Optional[float]
     pipeline_loaded: bool
-    queue_size: int
-    current_job: Optional[str]
+    is_generating: bool
 
 
 # ============================================================================
-# Generation Queue and Worker
+# Pipeline Manager (handles caching)
 # ============================================================================
 
-@dataclass
-class QueuedJob:
-    """Internal job representation."""
-    job_id: str
-    request: GenerationRequest
-    preset: GenerationPreset
-    status: GenerationStatus = GenerationStatus.QUEUED
-    created_at: str = field(default_factory=lambda: datetime.now().isoformat())
-    started_at: Optional[str] = None
-    completed_at: Optional[str] = None
-    output_path: Optional[str] = None
-    error_message: Optional[str] = None
-    input_image_path: Optional[str] = None
-
-
-class GenerationQueue:
+class PipelineManager:
     """
-    Thread-safe generation queue that processes one job at a time.
-    New requests wait in queue until the current generation completes.
+    Manages pipeline loading and caching.
+    Keeps models in VRAM for faster subsequent generations.
     """
     
     def __init__(self):
-        self._queue: Queue[QueuedJob] = Queue()
-        self._jobs: Dict[str, QueuedJob] = {}
-        self._current_job: Optional[str] = None
         self._lock = threading.Lock()
-        self._worker_thread: Optional[threading.Thread] = None
-        self._running = False
+        self._is_generating = False
+        self._current_job_id: Optional[str] = None
         self._pipeline_cache = {
             "pipeline": None,
             "pipeline_type": None,
@@ -391,116 +630,21 @@ class GenerationQueue:
             "enable_fp8": None,
         }
     
-    def start(self):
-        """Start the worker thread."""
-        self._running = True
-        self._worker_thread = threading.Thread(target=self._worker_loop, daemon=True)
-        self._worker_thread.start()
+    def is_pipeline_loaded(self) -> bool:
+        """Check if a pipeline is currently cached."""
+        return self._pipeline_cache["pipeline"] is not None
     
-    def stop(self):
-        """Stop the worker thread."""
-        self._running = False
-        if self._worker_thread:
-            self._worker_thread.join(timeout=5)
+    def is_generating(self) -> bool:
+        """Check if currently generating."""
+        return self._is_generating
     
-    def add_job(self, request: GenerationRequest, preset: GenerationPreset, input_image_path: Optional[str] = None) -> str:
-        """Add a job to the queue. Returns job ID."""
-        job_id = str(uuid.uuid4())
-        job = QueuedJob(
-            job_id=job_id,
-            request=request,
-            preset=preset,
-            input_image_path=input_image_path,
-        )
-        
+    def set_generating(self, is_generating: bool, job_id: Optional[str] = None):
+        """Set the generating state."""
         with self._lock:
-            self._jobs[job_id] = job
-            self._queue.put(job)
-        
-        return job_id
+            self._is_generating = is_generating
+            self._current_job_id = job_id
     
-    def get_job(self, job_id: str) -> Optional[QueuedJob]:
-        """Get job status."""
-        with self._lock:
-            return self._jobs.get(job_id)
-    
-    def get_queue_position(self, job_id: str) -> Optional[int]:
-        """Get position in queue (1-indexed, None if not queued)."""
-        with self._lock:
-            job = self._jobs.get(job_id)
-            if not job or job.status != GenerationStatus.QUEUED:
-                return None
-            
-            # Count jobs ahead in queue
-            position = 1
-            for jid, j in self._jobs.items():
-                if j.status == GenerationStatus.QUEUED and j.created_at < job.created_at:
-                    position += 1
-            return position
-    
-    def get_queue_size(self) -> int:
-        """Get current queue size."""
-        return self._queue.qsize()
-    
-    def get_current_job_id(self) -> Optional[str]:
-        """Get the currently processing job ID."""
-        return self._current_job
-    
-    def cancel_job(self, job_id: str) -> bool:
-        """Cancel a queued job. Cannot cancel processing jobs."""
-        with self._lock:
-            job = self._jobs.get(job_id)
-            if job and job.status == GenerationStatus.QUEUED:
-                job.status = GenerationStatus.CANCELLED
-                job.completed_at = datetime.now().isoformat()
-                return True
-        return False
-    
-    def _worker_loop(self):
-        """Main worker loop - processes jobs one at a time."""
-        while self._running:
-            try:
-                # Block waiting for a job (with timeout to allow checking _running)
-                try:
-                    job = self._queue.get(timeout=1.0)
-                except:
-                    continue
-                
-                # Skip cancelled jobs
-                if job.status == GenerationStatus.CANCELLED:
-                    self._queue.task_done()
-                    continue
-                
-                # Process the job
-                with self._lock:
-                    self._current_job = job.job_id
-                    job.status = GenerationStatus.PROCESSING
-                    job.started_at = datetime.now().isoformat()
-                
-                try:
-                    output_path = self._generate_video(job)
-                    
-                    with self._lock:
-                        job.status = GenerationStatus.COMPLETED
-                        job.output_path = output_path
-                        job.completed_at = datetime.now().isoformat()
-                        
-                except Exception as e:
-                    import traceback
-                    with self._lock:
-                        job.status = GenerationStatus.FAILED
-                        job.error_message = f"{str(e)}\n{traceback.format_exc()}"
-                        job.completed_at = datetime.now().isoformat()
-                
-                finally:
-                    with self._lock:
-                        self._current_job = None
-                    self._queue.task_done()
-                    
-            except Exception as e:
-                print(f"Worker error: {e}")
-    
-    def _get_cached_pipeline(self, preset: GenerationPreset):
+    def get_cached_pipeline(self, preset: GenerationPreset):
         """Get or create cached pipeline."""
         cache = self._pipeline_cache
         
@@ -626,159 +770,26 @@ class GenerationQueue:
         except Exception as e:
             import traceback
             return None, f"Failed to load pipeline: {e}\n{traceback.format_exc()}"
-    
-    def _generate_video(self, job: QueuedJob) -> str:
-        """Generate video for a job. Returns output path."""
-        import random
-        from PIL import Image
-        
-        preset = job.preset
-        request = job.request
-        
-        # Auto-download required models if not present
-        try:
-            checkpoint_path, upsampler_path = auto_download_required_models(preset)
-            preset.checkpoint_path = checkpoint_path
-            preset.spatial_upsampler_path = upsampler_path
-        except Exception as e:
-            raise RuntimeError(f"Failed to download required models: {e}")
-        
-        # Merge request overrides with preset
-        prompt = request.prompt if request.prompt else preset.prompt
-        negative_prompt = request.negative_prompt if request.negative_prompt is not None else preset.negative_prompt
-        height = request.height if request.height else preset.height
-        width = request.width if request.width else preset.width
-        num_frames = request.num_frames if request.num_frames else preset.num_frames
-        frame_rate = request.frame_rate if request.frame_rate else preset.frame_rate
-        num_inference_steps = request.num_inference_steps if request.num_inference_steps else preset.num_inference_steps
-        cfg_guidance_scale = request.cfg_guidance_scale if request.cfg_guidance_scale else preset.cfg_guidance_scale
-        seed = request.seed if request.seed is not None else preset.seed
-        image_strength = request.image_strength if request.image_strength is not None else preset.image_strength
-        
-        if not prompt:
-            raise ValueError("Prompt is required")
-        
-        # Handle seed
-        if seed is None or seed < 0:
-            seed = random.randint(0, 2**32 - 1)
-        seed = int(seed)
-        
-        # Set FP8 optimization
-        if preset.enable_fp8:
-            os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
-        
-        # Get pipeline
-        pipeline, error = self._get_cached_pipeline(preset)
-        if error:
-            raise RuntimeError(error)
-        
-        # Prepare image conditioning
-        images = []
-        if job.input_image_path and Path(job.input_image_path).exists():
-            images = [(job.input_image_path, 0, image_strength)]
-        
-        # Import utilities
-        from ltx_core.model.video_vae import TilingConfig, get_video_chunks_number
-        from ltx_pipelines.utils.media_io import encode_video
-        from ltx_pipelines.utils.constants import AUDIO_SAMPLE_RATE
-        
-        tiling_config = TilingConfig.default()
-        if preset.pipeline_type == "ti2vid_one_stage":
-            video_chunks_number = 1
-        else:
-            video_chunks_number = get_video_chunks_number(num_frames, tiling_config)
-        
-        # Generate
-        OUTPUTS_DIR.mkdir(parents=True, exist_ok=True)
-        timestamp = time.strftime("%Y%m%d_%H%M%S")
-        output_path = OUTPUTS_DIR / f"ltx2_api_{timestamp}_{job.job_id[:8]}.mp4"
-        
-        with torch.no_grad():
-            if preset.pipeline_type == "distilled":
-                video, audio = pipeline(
-                    prompt=prompt,
-                    seed=seed,
-                    height=int(height),
-                    width=int(width),
-                    num_frames=int(num_frames),
-                    frame_rate=float(frame_rate),
-                    images=images,
-                    tiling_config=tiling_config,
-                    enhance_prompt=False,
-                )
-            elif preset.pipeline_type == "ic_lora":
-                video, audio = pipeline(
-                    prompt=prompt,
-                    seed=seed,
-                    height=int(height),
-                    width=int(width),
-                    num_frames=int(num_frames),
-                    frame_rate=float(frame_rate),
-                    images=images,
-                    video_conditioning=[],
-                    tiling_config=tiling_config,
-                    enhance_prompt=False,
-                )
-            elif preset.pipeline_type == "ti2vid_one_stage":
-                video, audio = pipeline(
-                    prompt=prompt,
-                    negative_prompt=negative_prompt if negative_prompt else "",
-                    seed=seed,
-                    height=int(height),
-                    width=int(width),
-                    num_frames=int(num_frames),
-                    frame_rate=float(frame_rate),
-                    num_inference_steps=int(num_inference_steps),
-                    cfg_guidance_scale=float(cfg_guidance_scale),
-                    images=images,
-                    enhance_prompt=False,
-                )
-            else:
-                video, audio = pipeline(
-                    prompt=prompt,
-                    negative_prompt=negative_prompt if negative_prompt else "",
-                    seed=seed,
-                    height=int(height),
-                    width=int(width),
-                    num_frames=int(num_frames),
-                    frame_rate=float(frame_rate),
-                    num_inference_steps=int(num_inference_steps),
-                    cfg_guidance_scale=float(cfg_guidance_scale),
-                    images=images,
-                    tiling_config=tiling_config,
-                    enhance_prompt=False,
-                )
-            
-            encode_video(
-                video=video,
-                fps=float(frame_rate),
-                audio=audio,
-                audio_sample_rate=AUDIO_SAMPLE_RATE,
-                output_path=str(output_path),
-                video_chunks_number=video_chunks_number,
-            )
-        
-        return str(output_path)
 
 
 # ============================================================================
 # FastAPI Application
 # ============================================================================
 
-# Global generation queue
-generation_queue: Optional[GenerationQueue] = None
+# Global pipeline manager
+_pipeline_manager: Optional[PipelineManager] = None
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Application lifespan - start/stop worker."""
-    global generation_queue
+    """Application lifespan - initialize pipeline manager."""
+    global _pipeline_manager
     
     # Startup
     ensure_directories()
-    generation_queue = GenerationQueue()
-    generation_queue.start()
-    print("✅ LTX-2 API started. Generation worker running.")
+    
+    _pipeline_manager = PipelineManager()
+    print("✅ LTX-2 API started. Streaming generation enabled.")
     print(f"📂 Models directory: {MODELS_DIR.absolute()}")
     print(f"📂 Outputs directory: {OUTPUTS_DIR.absolute()}")
     print(f"🌐 Web UI: http://localhost:8000/")
@@ -787,8 +798,6 @@ async def lifespan(app: FastAPI):
     yield
     
     # Shutdown
-    if generation_queue:
-        generation_queue.stop()
     print("🛑 LTX-2 API stopped.")
 
 
@@ -843,10 +852,8 @@ async def health_check():
         gpu_name = torch.cuda.get_device_name(0)
         gpu_memory = round(torch.cuda.get_device_properties(0).total_memory / (1024**3), 2)
     
-    pipeline_loaded = (
-        generation_queue is not None 
-        and generation_queue._pipeline_cache.get("pipeline") is not None
-    )
+    pipeline_loaded = _pipeline_manager.is_pipeline_loaded() if _pipeline_manager else False
+    is_generating = _pipeline_manager.is_generating() if _pipeline_manager else False
     
     return HealthResponse(
         status="healthy",
@@ -854,8 +861,7 @@ async def health_check():
         gpu_name=gpu_name,
         gpu_memory_gb=gpu_memory,
         pipeline_loaded=pipeline_loaded,
-        queue_size=generation_queue.get_queue_size() if generation_queue else 0,
-        current_job=generation_queue.get_current_job_id() if generation_queue else None,
+        is_generating=is_generating,
     )
 
 
@@ -920,19 +926,24 @@ async def download_model(model_key: str, background_tasks: BackgroundTasks):
 
 
 # ============================================================================
-# Generation Endpoints
+# Generation Endpoints (Streaming Only)
 # ============================================================================
 
-@app.post("/generate", response_model=GenerationJob)
-async def generate_video(request: GenerationRequest):
+
+@app.post("/generate")
+async def generate_video_stream(request: GenerationRequest):
     """
-    Submit a video generation job.
+    Generate a video with real-time progress streaming via SSE.
     
-    Uses the specified preset or default preset if not provided.
-    The job is queued and processed sequentially (one at a time).
-    Models are automatically downloaded on-demand if not present.
+    This endpoint streams progress updates during generation, eliminating
+    the need for polling. Events include:
+    - init: Job initialized with job_id
+    - stage: Current generation stage (loading models, stage 1, stage 2, encoding)
+    - step: Denoising step progress within a stage
+    - complete: Generation finished with download URL
+    - error: Generation failed with error message
     """
-    if not generation_queue:
+    if not _pipeline_manager:
         raise HTTPException(status_code=503, detail="Generation service not ready")
     
     # Get preset
@@ -943,16 +954,11 @@ async def generate_video(request: GenerationRequest):
     if not preset:
         raise HTTPException(status_code=404, detail=f"Preset '{preset_name}' not found")
     
-    # Note: Model validation is done at generation time with auto-download support
-    # This allows jobs to be queued even if models aren't downloaded yet
-    
     # Handle input image
     input_image_path = None
     if request.input_image_base64:
         try:
-            import tempfile
             from PIL import Image
-            import io
             
             image_data = base64.b64decode(request.input_image_base64)
             image = Image.open(io.BytesIO(image_data))
@@ -965,79 +971,301 @@ async def generate_video(request: GenerationRequest):
         except Exception as e:
             raise HTTPException(status_code=400, detail=f"Invalid input image: {e}")
     
-    # Add job to queue
-    job_id = generation_queue.add_job(request, preset, input_image_path)
-    job = generation_queue.get_job(job_id)
+    job_id = str(uuid.uuid4())
     
-    prompt = request.prompt or preset.prompt
+    async def event_generator():
+        """Generate SSE events during video generation."""
+        progress_queue = asyncio.Queue()
+        loop = asyncio.get_event_loop()
+        
+        def send_progress(data: dict):
+            """Thread-safe callback to send progress events."""
+            try:
+                loop.call_soon_threadsafe(
+                    lambda: asyncio.create_task(progress_queue.put(data))
+                )
+            except Exception:
+                pass  # Ignore if loop is closed
+        
+        # Send initial event
+        yield f"data: {json.dumps({'type': 'init', 'job_id': job_id})}\n\n"
+        
+        # Run generation in thread pool
+        executor = ThreadPoolExecutor(max_workers=1)
+        
+        def run_generation():
+            """Run the generation with progress callbacks."""
+            try:
+                set_progress_callback(send_progress)
+                send_progress({"type": "stage", "stage": "loading", "message": "Loading models..."})
+                
+                output_path = _generate_video_with_progress(
+                    job_id=job_id,
+                    request=request,
+                    preset=preset,
+                    input_image_path=input_image_path,
+                    progress_callback=send_progress,
+                )
+                
+                send_progress({
+                    "type": "complete",
+                    "job_id": job_id,
+                    "output_path": output_path,
+                    "download_url": f"/generate/{job_id}/download"
+                })
+            except Exception as e:
+                import traceback
+                send_progress({
+                    "type": "error",
+                    "message": str(e),
+                    "traceback": traceback.format_exc()
+                })
+            finally:
+                set_progress_callback(None)
+                send_progress({"type": "done"})
+        
+        # Start generation in background
+        future = loop.run_in_executor(executor, run_generation)
+        
+        # Stream progress events
+        while True:
+            try:
+                # Wait for progress with timeout
+                data = await asyncio.wait_for(progress_queue.get(), timeout=60.0)
+                yield f"data: {json.dumps(data)}\n\n"
+                
+                if data.get("type") in ("complete", "error", "done"):
+                    break
+            except asyncio.TimeoutError:
+                # Send keepalive
+                yield f"data: {json.dumps({'type': 'keepalive'})}\n\n"
+            except Exception:
+                break
+        
+        # Wait for future to complete
+        try:
+            await asyncio.wait_for(asyncio.wrap_future(future), timeout=5.0)
+        except Exception:
+            pass
+        
+        executor.shutdown(wait=False)
     
-    return GenerationJob(
-        job_id=job_id,
-        status=job.status,
-        preset_name=preset_name,
-        prompt=prompt,
-        created_at=job.created_at,
-        position_in_queue=generation_queue.get_queue_position(job_id),
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        }
     )
 
 
-@app.get("/generate/{job_id}", response_model=GenerationJob)
-async def get_generation_status(job_id: str):
-    """Get the status of a generation job."""
-    if not generation_queue:
-        raise HTTPException(status_code=503, detail="Generation service not ready")
+# Store completed streaming jobs for download
+_streaming_jobs: Dict[str, str] = {}
+
+
+def _generate_video_with_progress(
+    job_id: str,
+    request: GenerationRequest,
+    preset: GenerationPreset,
+    input_image_path: Optional[str],
+    progress_callback,
+) -> str:
+    """Generate video with progress callbacks. Returns output path."""
     
-    job = generation_queue.get_job(job_id)
-    if not job:
-        raise HTTPException(status_code=404, detail=f"Job '{job_id}' not found")
+    # Capture stdout/stderr to parse tqdm progress
+    with OutputCaptureContext(progress_callback):
+        return _generate_video_internal(
+            job_id=job_id,
+            request=request,
+            preset=preset,
+            input_image_path=input_image_path,
+            progress_callback=progress_callback,
+        )
+
+
+def _generate_video_internal(
+    job_id: str,
+    request: GenerationRequest,
+    preset: GenerationPreset,
+    input_image_path: Optional[str],
+    progress_callback,
+) -> str:
+    """Internal generation function."""
+    import random
+    from PIL import Image
     
-    return GenerationJob(
-        job_id=job.job_id,
-        status=job.status,
-        preset_name=job.preset.name,
-        prompt=job.request.prompt or job.preset.prompt,
-        created_at=job.created_at,
-        started_at=job.started_at,
-        completed_at=job.completed_at,
-        output_path=job.output_path,
-        error_message=job.error_message,
-        position_in_queue=generation_queue.get_queue_position(job_id),
-    )
+    # Auto-download required models if not present
+    try:
+        checkpoint_path, upsampler_path = auto_download_required_models(preset)
+        preset.checkpoint_path = checkpoint_path
+        preset.spatial_upsampler_path = upsampler_path
+    except Exception as e:
+        raise RuntimeError(f"Failed to download required models: {e}")
+    
+    # Merge request overrides with preset
+    prompt = request.prompt if request.prompt else preset.prompt
+    negative_prompt = request.negative_prompt if request.negative_prompt is not None else preset.negative_prompt
+    height = request.height if request.height else preset.height
+    width = request.width if request.width else preset.width
+    num_frames = request.num_frames if request.num_frames else preset.num_frames
+    frame_rate = request.frame_rate if request.frame_rate else preset.frame_rate
+    num_inference_steps = request.num_inference_steps if request.num_inference_steps else preset.num_inference_steps
+    cfg_guidance_scale = request.cfg_guidance_scale if request.cfg_guidance_scale else preset.cfg_guidance_scale
+    seed = request.seed if request.seed is not None else preset.seed
+    image_strength = request.image_strength if request.image_strength is not None else preset.image_strength
+    
+    if not prompt:
+        raise ValueError("Prompt is required")
+    
+    # Handle seed
+    if seed is None or seed < 0:
+        seed = random.randint(0, 2**32 - 1)
+    seed = int(seed)
+    
+    # Set FP8 optimization
+    if preset.enable_fp8:
+        os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
+    
+    # Get pipeline from cache
+    progress_callback({"type": "stage", "stage": "loading_pipeline", "message": "Loading pipeline..."})
+    pipeline, error = _pipeline_manager.get_cached_pipeline(preset)
+    if error:
+        raise RuntimeError(error)
+    
+    # Prepare image conditioning
+    images = []
+    if input_image_path and Path(input_image_path).exists():
+        images = [(input_image_path, 0, image_strength)]
+    
+    # Import utilities
+    from ltx_core.model.video_vae import TilingConfig, get_video_chunks_number
+    from ltx_pipelines.utils.media_io import encode_video
+    from ltx_pipelines.utils.constants import AUDIO_SAMPLE_RATE
+    
+    tiling_config = TilingConfig.default()
+    if preset.pipeline_type == "ti2vid_one_stage":
+        video_chunks_number = 1
+    else:
+        video_chunks_number = get_video_chunks_number(num_frames, tiling_config)
+    
+    # Determine stage info based on pipeline type
+    if preset.pipeline_type == "distilled":
+        stage_1_steps = 8  # Distilled uses 8 fixed sigmas
+        stage_2_steps = 3  # Stage 2 distilled sigmas
+    elif preset.pipeline_type == "ti2vid_one_stage":
+        stage_1_steps = num_inference_steps
+        stage_2_steps = 0
+    else:
+        stage_1_steps = num_inference_steps
+        stage_2_steps = 8  # Typical stage 2 steps
+    
+    progress_callback({
+        "type": "info",
+        "pipeline": preset.pipeline_type,
+        "stage_1_steps": stage_1_steps,
+        "stage_2_steps": stage_2_steps,
+        "num_frames": num_frames,
+        "resolution": f"{width}x{height}"
+    })
+    
+    # Generate
+    OUTPUTS_DIR.mkdir(parents=True, exist_ok=True)
+    timestamp = time.strftime("%Y%m%d_%H%M%S")
+    output_path = OUTPUTS_DIR / f"ltx2_stream_{timestamp}_{job_id[:8]}.mp4"
+    
+    progress_callback({"type": "stage", "stage": "stage_1", "message": "Stage 1: Generating video..."})
+    
+    with torch.no_grad():
+        if preset.pipeline_type == "distilled":
+            video, audio = pipeline(
+                prompt=prompt,
+                seed=seed,
+                height=int(height),
+                width=int(width),
+                num_frames=int(num_frames),
+                frame_rate=float(frame_rate),
+                images=images,
+                tiling_config=tiling_config,
+                enhance_prompt=False,
+            )
+        elif preset.pipeline_type == "ic_lora":
+            video, audio = pipeline(
+                prompt=prompt,
+                seed=seed,
+                height=int(height),
+                width=int(width),
+                num_frames=int(num_frames),
+                frame_rate=float(frame_rate),
+                images=images,
+                video_conditioning=[],
+                tiling_config=tiling_config,
+                enhance_prompt=False,
+            )
+        elif preset.pipeline_type == "ti2vid_one_stage":
+            video, audio = pipeline(
+                prompt=prompt,
+                negative_prompt=negative_prompt if negative_prompt else "",
+                seed=seed,
+                height=int(height),
+                width=int(width),
+                num_frames=int(num_frames),
+                frame_rate=float(frame_rate),
+                num_inference_steps=int(num_inference_steps),
+                cfg_guidance_scale=float(cfg_guidance_scale),
+                images=images,
+                enhance_prompt=False,
+            )
+        else:
+            video, audio = pipeline(
+                prompt=prompt,
+                negative_prompt=negative_prompt if negative_prompt else "",
+                seed=seed,
+                height=int(height),
+                width=int(width),
+                num_frames=int(num_frames),
+                frame_rate=float(frame_rate),
+                num_inference_steps=int(num_inference_steps),
+                cfg_guidance_scale=float(cfg_guidance_scale),
+                images=images,
+                tiling_config=tiling_config,
+                enhance_prompt=False,
+            )
+        
+        progress_callback({"type": "stage", "stage": "encoding", "message": "Encoding video..."})
+        
+        encode_video(
+            video=video,
+            fps=float(frame_rate),
+            audio=audio,
+            audio_sample_rate=AUDIO_SAMPLE_RATE,
+            output_path=str(output_path),
+            video_chunks_number=video_chunks_number,
+        )
+    
+    # Store for download
+    _streaming_jobs[job_id] = str(output_path)
+    
+    return str(output_path)
 
 
 @app.get("/generate/{job_id}/download")
 async def download_video(job_id: str):
     """Download the generated video."""
-    if not generation_queue:
-        raise HTTPException(status_code=503, detail="Generation service not ready")
+    output_path = _streaming_jobs.get(job_id)
     
-    job = generation_queue.get_job(job_id)
-    if not job:
-        raise HTTPException(status_code=404, detail=f"Job '{job_id}' not found")
+    if not output_path:
+        raise HTTPException(status_code=404, detail=f"Job '{job_id}' not found or not completed")
     
-    if job.status != GenerationStatus.COMPLETED:
-        raise HTTPException(status_code=400, detail=f"Job not completed. Status: {job.status}")
-    
-    if not job.output_path or not Path(job.output_path).exists():
+    if not Path(output_path).exists():
         raise HTTPException(status_code=404, detail="Output video not found")
     
     return FileResponse(
-        job.output_path,
+        output_path,
         media_type="video/mp4",
-        filename=Path(job.output_path).name,
+        filename=Path(output_path).name,
     )
-
-
-@app.delete("/generate/{job_id}")
-async def cancel_generation(job_id: str):
-    """Cancel a queued generation job."""
-    if not generation_queue:
-        raise HTTPException(status_code=503, detail="Generation service not ready")
-    
-    if generation_queue.cancel_job(job_id):
-        return {"message": f"Job '{job_id}' cancelled"}
-    else:
-        raise HTTPException(status_code=400, detail="Cannot cancel job (not queued or already processing)")
 
 
 # ============================================================================
