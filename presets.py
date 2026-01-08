@@ -23,12 +23,12 @@ class GenerationPreset:
     created_at: str = field(default_factory=lambda: datetime.now().isoformat())
     updated_at: str = field(default_factory=lambda: datetime.now().isoformat())
     
-    # Pipeline settings
+    # Pipeline settings (defaults match pre-downloaded models from run.sh)
     pipeline_type: str = "distilled"
-    checkpoint_path: str = ""
+    checkpoint_path: str = "models/checkpoints/ltx-2-19b-distilled-fp8.safetensors"
     distilled_lora_path: str = "None"
-    spatial_upsampler_path: str = ""
-    gemma_path: str = "./models/gemma"
+    spatial_upsampler_path: str = "models/upsamplers/ltx-2-spatial-upscaler-x2-1.0.safetensors"
+    gemma_path: str = "models/gemma"
     
     # Generation parameters (NO prompt/negative_prompt - those are generation inputs, not settings)
     height: int = 1024
@@ -90,11 +90,20 @@ class PresetManager:
             self._create_default_preset()
     
     def _create_default_preset(self):
-        """Create the default preset with sensible defaults."""
+        """Create the default preset with sensible defaults.
+        
+        Uses pre-downloaded models from run.sh:
+        - Checkpoint: ltx-2-19b-distilled-fp8.safetensors
+        - Upsampler: ltx-2-spatial-upscaler-x2-1.0.safetensors
+        - Text encoder: Gemma 3 12B FP8
+        """
         default = GenerationPreset(
             name=DEFAULT_PRESET_NAME,
             description="Default generation settings for LTX-2",
             pipeline_type="distilled",
+            checkpoint_path="models/checkpoints/ltx-2-19b-distilled-fp8.safetensors",
+            spatial_upsampler_path="models/upsamplers/ltx-2-spatial-upscaler-x2-1.0.safetensors",
+            gemma_path="models/gemma",
             height=1024,
             width=1536,
             num_frames=121,

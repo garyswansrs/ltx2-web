@@ -1240,8 +1240,8 @@
                                 </div>
                                 <div class="form-group">
                                     <label for="gemmaPath">Gemma Model Path</label>
-                                    <input type="text" id="gemmaPath" value="./models/gemma" placeholder="./models/gemma">
-                                    <div class="form-hint">Path to Gemma text encoder model.</div>
+                                    <input type="text" id="gemmaPath" value="models/gemma" placeholder="models/gemma">
+                                    <div class="form-hint">Path to Gemma 3 12B FP8 text encoder (pre-downloaded by run.sh).</div>
                                 </div>
                             </div>
                         </div>
@@ -1420,36 +1420,95 @@
                         </div>
                         <div class="collapsible-content" id="api-generate-content">
                             <p style="color: var(--text-secondary); margin-bottom: 1rem;">
-                                Generate a video with real-time progress streaming via Server-Sent Events (SSE). Models are auto-downloaded if needed.
+                                Generate a video with real-time progress streaming via Server-Sent Events (SSE). 
+                                <strong>Models are auto-downloaded from HuggingFace if not present.</strong>
                             </p>
+                            <div style="background: rgba(168, 85, 247, 0.1); border: 1px solid rgba(168, 85, 247, 0.3); border-radius: 8px; padding: 0.75rem; margin-bottom: 1rem;">
+                                <strong style="color: var(--accent-purple);">💡 Default Behavior:</strong>
+                                <span style="color: var(--text-secondary);">
+                                    If no preset is specified, uses the "default" preset: <code>distilled</code> pipeline, 
+                                    1536×1024, 121 frames @ 24fps, FP8 enabled. Only <code>prompt</code> is required.
+                                    Pre-downloaded models: <code>ltx-2-19b-distilled-fp8</code>, <code>ltx-2-spatial-upscaler-x2</code>, Gemma 3 12B FP8.
+                                </span>
+                            </div>
                             <h4 style="margin-bottom: 0.5rem;">Request Body</h4>
                             <pre style="background: var(--bg-dark); padding: 1rem; border-radius: 8px; overflow-x: auto; font-family: 'JetBrains Mono', monospace; font-size: 0.85rem;"><code>{
-  "preset_name": "default",     // Optional: preset to use
-  "prompt": "A sunset...",      // Required if preset has no prompt
-  "negative_prompt": "blurry",  // Optional
-  "height": 1024,               // 256-2048
-  "width": 1536,                // 256-2048
-  "num_frames": 121,            // 9-257 (multiples of 8 + 1)
-  "frame_rate": 24,             // 8-60
-  "num_inference_steps": 40,    // 4-100
-  "cfg_guidance_scale": 4.0,    // 1.0-15.0
-  "seed": -1,                   // -1 for random
-  "input_image_base64": "...",  // Optional: base64 image
-  "image_strength": 1.0         // 0.0-1.0
+  // Core Settings
+  "preset_name": "default",        // Optional: preset to use as base
+  "prompt": "A sunset...",         // Required: text prompt for generation
+  "negative_prompt": "blurry",     // Optional: negative prompt
+  
+  // Pipeline Settings (override preset)
+  "pipeline_type": "distilled",    // distilled | ti2vid_one_stage | ti2vid_two_stages | ic_lora | keyframe_interpolation
+  "checkpoint_path": null,         // Optional: path to checkpoint model
+  "spatial_upsampler_path": null,  // Optional: path to upsampler (required for distilled/ic_lora)
+  "distilled_lora_path": null,     // Optional: path to distilled LoRA (required for two_stages/keyframe)
+  "gemma_path": "./models/gemma",  // Optional: path to Gemma text encoder
+  "enable_fp8": true,              // Optional: enable FP8 optimization
+  
+  // Generation Settings (override preset)
+  "height": 1024,                  // 256-2048, should be divisible by 32
+  "width": 1536,                   // 256-2048, should be divisible by 32
+  "num_frames": 121,               // 9-257, should be (8n + 1) for optimal encoding
+  "frame_rate": 24.0,              // 8-60 FPS
+  "num_inference_steps": 40,       // 4-100 denoising steps
+  "cfg_guidance_scale": 4.0,       // 1.0-15.0 classifier-free guidance
+  "seed": -1,                      // -1 for random, or specific seed
+  "image_strength": 1.0,           // 0.0-1.0 conditioning strength
+  
+  // Multiple Images Input (new format)
+  "images": [
+    {
+      "image_base64": "...",       // Base64 encoded image
+      "frame_index": 0,            // Frame index (0=start, use for keyframe interpolation)
+      "strength": 1.0              // Conditioning strength 0.0-1.0
+    }
+  ],
+  
+  // Video Conditioning (IC-LoRA only)
+  "video_conditioning": [
+    {
+      "video_base64": "...",       // Base64 encoded video (depth/pose/edges)
+      "strength": 1.0              // Conditioning strength 0.0-1.0
+    }
+  ],
+  
+  // Legacy single image (backward compatible)
+  "input_image_base64": "..."      // Optional: base64 encoded single image
 }</code></pre>
                             <h4 style="margin-top: 1rem; margin-bottom: 0.5rem;">SSE Events (text/event-stream)</h4>
                             <ul style="color: var(--text-secondary); margin-left: 1.5rem;">
-                                <li><code>init</code> - Job initialized with job_id</li>
-                                <li><code>stage</code> - Current stage (loading, stage_1, stage_2, encoding)</li>
-                                <li><code>step</code> - Denoising step progress within stage</li>
-                                <li><code>complete</code> - Generation finished with download URL</li>
-                                <li><code>error</code> - Generation failed with error message</li>
+                                <li><code>init</code> - Job initialized with <code>job_id</code></li>
+                                <li><code>info</code> - Pipeline info: <code>pipeline</code>, <code>stage_1_steps</code>, <code>stage_2_steps</code>, <code>num_frames</code>, <code>resolution</code></li>
+                                <li><code>stage</code> - Stage change: <code>loading</code>, <code>loading_pipeline</code>, <code>stage_1</code>, <code>encoding</code></li>
+                                <li><code>step</code> - Progress within stage: <code>stage</code>, <code>step</code>, <code>total</code>, <code>percentage</code>, <code>elapsed</code>, <code>remaining</code>, <code>rate</code></li>
+                                <li><code>complete</code> - Generation finished: <code>job_id</code>, <code>output_path</code>, <code>download_url</code></li>
+                                <li><code>error</code> - Generation failed: <code>message</code>, <code>traceback</code></li>
+                                <li><code>keepalive</code> - Heartbeat (sent every 60s during long operations)</li>
+                                <li><code>done</code> - Stream ended</li>
                             </ul>
-                            <h4 style="margin-top: 1rem; margin-bottom: 0.5rem;">Example Event Data</h4>
-                            <pre style="background: var(--bg-dark); padding: 1rem; border-radius: 8px; overflow-x: auto; font-family: 'JetBrains Mono', monospace; font-size: 0.85rem;"><code>data: {"type": "init", "job_id": "abc123..."}
-data: {"type": "stage", "stage": "stage_1", "message": "Stage 1: Generating..."}
-data: {"type": "step", "stage": "Stage 1 Denoising", "step": 3, "total": 8, "percentage": 37.5}
-data: {"type": "complete", "job_id": "abc123...", "download_url": "/generate/abc123.../download"}</code></pre>
+                            <h4 style="margin-top: 1rem; margin-bottom: 0.5rem;">Example Event Stream</h4>
+                            <pre style="background: var(--bg-dark); padding: 1rem; border-radius: 8px; overflow-x: auto; font-family: 'JetBrains Mono', monospace; font-size: 0.85rem;"><code>data: {"type": "init", "job_id": "abc123-def456-..."}
+
+data: {"type": "stage", "stage": "loading", "message": "Loading models..."}
+
+data: {"type": "info", "pipeline": "distilled", "stage_1_steps": 8, "stage_2_steps": 3, "num_frames": 121, "resolution": "1536x1024"}
+
+data: {"type": "stage", "stage": "stage_1", "message": "Stage 1: Generating video..."}
+
+data: {"type": "step", "stage": "Stage 1: Denoising", "step": 1, "total": 8, "percentage": 12.5, "elapsed": "00:02", "remaining": "00:14", "rate": "2.00s/it"}
+
+data: {"type": "step", "stage": "Stage 1: Denoising", "step": 8, "total": 8, "percentage": 100, "elapsed": "00:16", "remaining": "00:00", "rate": "2.00s/it"}
+
+data: {"type": "step", "stage": "Stage 2: Refinement", "step": 3, "total": 3, "percentage": 100, "elapsed": "00:06", "remaining": "00:00", "rate": "2.00s/it"}
+
+data: {"type": "stage", "stage": "encoding", "message": "Encoding video..."}
+
+data: {"type": "step", "stage": "Video Encoding", "step": 3, "total": 3, "percentage": 100}
+
+data: {"type": "complete", "job_id": "abc123-def456-...", "output_path": "outputs/ltx2_stream_...", "download_url": "/generate/abc123-def456-.../download"}
+
+data: {"type": "done"}</code></pre>
                         </div>
                     </div>
 
@@ -1465,35 +1524,12 @@ data: {"type": "complete", "job_id": "abc123...", "download_url": "/generate/abc
                         </div>
                         <div class="collapsible-content" id="api-download-content">
                             <p style="color: var(--text-secondary); margin-bottom: 1rem;">
-                                Download the generated video file. Only available when status is <code>completed</code>.
+                                Download the generated video file. Only available after receiving the <code>complete</code> event.
                             </p>
+                            <h4 style="margin-bottom: 0.5rem;">Response</h4>
+                            <p style="color: var(--text-secondary); margin-bottom: 0.5rem;">Returns <code>video/mp4</code> file with appropriate filename.</p>
                             <h4 style="margin-bottom: 0.5rem;">Example</h4>
-                            <pre style="background: var(--bg-dark); padding: 1rem; border-radius: 8px; overflow-x: auto; font-family: 'JetBrains Mono', monospace; font-size: 0.85rem;"><code>curl http://localhost:8000/generate/abc123/download -o video.mp4</code></pre>
-                        </div>
-                    </div>
-
-                    <!-- Presets -->
-                    <div class="api-endpoint">
-                        <div class="collapsible-header" onclick="toggleApiSection('api-presets')">
-                            <div>
-                                <span class="badge" style="background: var(--accent-purple); color: white;">GET</span>
-                                <code style="margin-left: 0.5rem;">/presets</code>
-                                <span style="color: var(--text-secondary); margin-left: 0.5rem;">— List all presets</span>
-                            </div>
-                            <span id="api-presets-arrow">▼</span>
-                        </div>
-                        <div class="collapsible-content" id="api-presets-content">
-                            <p style="color: var(--text-secondary); margin-bottom: 1rem;">
-                                Get all available presets with their settings.
-                            </p>
-                            <h4 style="margin-bottom: 0.5rem;">Related Endpoints</h4>
-                            <ul style="color: var(--text-secondary); margin-left: 1.5rem;">
-                                <li><code>GET /presets/{name}</code> - Get specific preset</li>
-                                <li><code>POST /presets</code> - Create new preset</li>
-                                <li><code>PUT /presets/{name}</code> - Update preset</li>
-                                <li><code>DELETE /presets/{name}</code> - Delete preset</li>
-                                <li><code>POST /presets/{name}/set-default</code> - Set as default</li>
-                            </ul>
+                            <pre style="background: var(--bg-dark); padding: 1rem; border-radius: 8px; overflow-x: auto; font-family: 'JetBrains Mono', monospace; font-size: 0.85rem;"><code>curl http://localhost:8000/generate/abc123-def456/download -o video.mp4</code></pre>
                         </div>
                     </div>
 
@@ -1509,10 +1545,138 @@ data: {"type": "complete", "job_id": "abc123...", "download_url": "/generate/abc
                         </div>
                         <div class="collapsible-content" id="api-models-content">
                             <p style="color: var(--text-secondary); margin-bottom: 1rem;">
-                                Get all available models with their download status.
+                                Get all available models with their download status and metadata.
                             </p>
-                            <h4 style="margin-bottom: 0.5rem;">Download a Model</h4>
-                            <pre style="background: var(--bg-dark); padding: 1rem; border-radius: 8px; overflow-x: auto; font-family: 'JetBrains Mono', monospace; font-size: 0.85rem;"><code>curl -X POST http://localhost:8000/models/ltx-2-19b-distilled-fp8/download</code></pre>
+                            <h4 style="margin-bottom: 0.5rem;">Response</h4>
+                            <pre style="background: var(--bg-dark); padding: 1rem; border-radius: 8px; overflow-x: auto; font-family: 'JetBrains Mono', monospace; font-size: 0.85rem;"><code>{
+  "ltx-2-19b-distilled-fp8": {           // ⭐ Pre-downloaded by run.sh
+    "filename": "ltx-2-19b-distilled-fp8.safetensors",
+    "size": "27.1 GB",
+    "description": "FP8 distilled model (fast inference)",
+    "type": "checkpoint",
+    "status": "ready",
+    "path": "./models/checkpoints/ltx-2-19b-distilled-fp8.safetensors"
+  },
+  "ltx-2-spatial-upscaler-x2": {         // ⭐ Pre-downloaded by run.sh
+    "filename": "ltx-2-spatial-upscaler-x2-1.0.safetensors",
+    "size": "996 MB",
+    "description": "2x spatial upscaler",
+    "type": "upscaler",
+    "status": "ready",
+    "path": "./models/upsamplers/ltx-2-spatial-upscaler-x2-1.0.safetensors"
+  },
+  "ltx-2-19b-dev-fp8": {                 // Optional download
+    "filename": "ltx-2-19b-dev-fp8.safetensors",
+    "size": "27.1 GB",
+    "description": "FP8 quantized development model",
+    "type": "checkpoint",
+    "status": "missing",
+    "path": null
+  }
+  // ... more models
+}</code></pre>
+                            <div style="background: rgba(34, 197, 94, 0.1); border: 1px solid rgba(34, 197, 94, 0.3); border-radius: 8px; padding: 0.75rem; margin: 1rem 0;">
+                                <strong style="color: var(--accent-green);">⭐ Pre-downloaded (via run.sh):</strong>
+                                <span style="color: var(--text-secondary);">
+                                    <code>ltx-2-19b-distilled-fp8</code>, <code>ltx-2-spatial-upscaler-x2</code>, and Gemma 3 12B FP8 text encoder
+                                </span>
+                            </div>
+                            <h4 style="margin-top: 1rem; margin-bottom: 0.5rem;">Available Model Types</h4>
+                            <ul style="color: var(--text-secondary); margin-left: 1.5rem;">
+                                <li><code>checkpoint</code> - Main transformer models (dev, distilled, fp8, fp4 variants)</li>
+                                <li><code>lora</code> - LoRA adapters (distilled-lora-384)</li>
+                                <li><code>upscaler</code> - Spatial and temporal upsamplers</li>
+                            </ul>
+                            <h4 style="margin-top: 1rem; margin-bottom: 0.5rem;">Related Endpoints</h4>
+                            <ul style="color: var(--text-secondary); margin-left: 1.5rem;">
+                                <li><code>GET /models/{model_key}</code> - Get specific model info</li>
+                                <li><code>POST /models/{model_key}/download</code> - Download a model from HuggingFace</li>
+                            </ul>
+                            <h4 style="margin-top: 1rem; margin-bottom: 0.5rem;">Download Example</h4>
+                            <pre style="background: var(--bg-dark); padding: 1rem; border-radius: 8px; overflow-x: auto; font-family: 'JetBrains Mono', monospace; font-size: 0.85rem;"><code>curl -X POST http://localhost:8000/models/ltx-2-19b-distilled-fp8/download
+
+# Response:
+{"message": "Model 'ltx-2-19b-distilled-fp8' downloaded successfully", "path": "./models/checkpoints/..."}</code></pre>
+                        </div>
+                    </div>
+
+                    <!-- Presets -->
+                    <div class="api-endpoint">
+                        <div class="collapsible-header" onclick="toggleApiSection('api-presets')">
+                            <div>
+                                <span class="badge" style="background: var(--accent-purple); color: white;">GET</span>
+                                <code style="margin-left: 0.5rem;">/presets</code>
+                                <span style="color: var(--text-secondary); margin-left: 0.5rem;">— List all presets</span>
+                            </div>
+                            <span id="api-presets-arrow">▼</span>
+                        </div>
+                        <div class="collapsible-content" id="api-presets-content">
+                            <p style="color: var(--text-secondary); margin-bottom: 1rem;">
+                                Get all available presets with their generation settings.
+                            </p>
+                            <h4 style="margin-bottom: 0.5rem;">Response</h4>
+                            <pre style="background: var(--bg-dark); padding: 1rem; border-radius: 8px; overflow-x: auto; font-family: 'JetBrains Mono', monospace; font-size: 0.85rem;"><code>[
+  {
+    "name": "default",
+    "description": "Default generation settings for LTX-2",
+    "is_default": true,
+    "created_at": "2024-01-01T00:00:00.000000",
+    "updated_at": "2024-01-01T00:00:00.000000",
+    "pipeline_type": "distilled",      // Uses fast distilled pipeline
+    "height": 1024,                    // 1024px height
+    "width": 1536,                     // 1536px width (3:2 aspect)
+    "num_frames": 121,                 // ~5 seconds at 24fps
+    "frame_rate": 24.0,                // 24 FPS
+    "num_inference_steps": 40,         // Ignored for distilled (uses 8 fixed steps)
+    "cfg_guidance_scale": 4.0,         // CFG scale
+    "seed": -1,                        // Random seed
+    "enable_fp8": true,                // FP8 optimization enabled
+    "image_strength": 1.0,             // Full image conditioning strength
+    "checkpoint_path": "models/checkpoints/ltx-2-19b-distilled-fp8.safetensors",
+    "spatial_upsampler_path": "models/upsamplers/ltx-2-spatial-upscaler-x2-1.0.safetensors",
+    "distilled_lora_path": "None",     // Not needed for distilled pipeline
+    "gemma_path": "models/gemma"       // Gemma 3 12B FP8 text encoder
+  }
+]</code></pre>
+                            <h4 style="margin-top: 1rem; margin-bottom: 0.5rem;">Pre-downloaded Models (via run.sh)</h4>
+                            <p style="color: var(--text-secondary); margin-bottom: 0.5rem;">
+                                The <code>run.sh</code> script automatically downloads these models on first run:
+                            </p>
+                            <ul style="color: var(--text-secondary); margin-left: 1.5rem; margin-bottom: 1rem;">
+                                <li><strong>Checkpoint:</strong> <code>ltx-2-19b-distilled-fp8.safetensors</code> (27GB) → <code>./models/checkpoints/</code></li>
+                                <li><strong>Upsampler:</strong> <code>ltx-2-spatial-upscaler-x2-1.0.safetensors</code> (996MB) → <code>./models/upsamplers/</code></li>
+                                <li><strong>Text Encoder:</strong> Gemma 3 12B FP8 (~13GB) → <code>./models/gemma/</code></li>
+                            </ul>
+                            <h4 style="margin-top: 1rem; margin-bottom: 0.5rem;">Default Generation Settings</h4>
+                            <ul style="color: var(--text-secondary); margin-left: 1.5rem; margin-bottom: 1rem;">
+                                <li><strong>Resolution:</strong> 1536×1024 (3:2 landscape)</li>
+                                <li><strong>Duration:</strong> 121 frames @ 24fps = ~5 seconds</li>
+                                <li><strong>Pipeline:</strong> Distilled (8 fixed denoising steps)</li>
+                                <li><strong>FP8:</strong> Enabled (reduces VRAM ~40%)</li>
+                            </ul>
+                            <h4 style="margin-top: 1rem; margin-bottom: 0.5rem;">Related Endpoints</h4>
+                            <ul style="color: var(--text-secondary); margin-left: 1.5rem;">
+                                <li><code>GET /presets/{name}</code> - Get specific preset</li>
+                                <li><code>POST /presets</code> - Create new preset</li>
+                                <li><code>PUT /presets/{name}</code> - Update existing preset</li>
+                                <li><code>DELETE /presets/{name}</code> - Delete preset (cannot delete "default")</li>
+                                <li><code>POST /presets/{name}/set-default</code> - Set as default preset</li>
+                            </ul>
+                            <h4 style="margin-top: 1rem; margin-bottom: 0.5rem;">Create Preset Example</h4>
+                            <pre style="background: var(--bg-dark); padding: 1rem; border-radius: 8px; overflow-x: auto; font-family: 'JetBrains Mono', monospace; font-size: 0.85rem;"><code>curl -X POST http://localhost:8000/presets \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "fast-720p",
+    "description": "Fast 720p generation",
+    "pipeline_type": "distilled",
+    "height": 720,
+    "width": 1280,
+    "num_frames": 65,
+    "frame_rate": 24,
+    "num_inference_steps": 8,
+    "cfg_guidance_scale": 4.0,
+    "enable_fp8": true
+  }'</code></pre>
                         </div>
                     </div>
 
@@ -1549,40 +1713,101 @@ data: {"type": "complete", "job_id": "abc123...", "download_url": "/generate/abc
                 <h2>🐍 Python Example (SSE Streaming)</h2>
                 <pre style="background: var(--bg-dark); padding: 1rem; border-radius: 8px; overflow-x: auto; font-family: 'JetBrains Mono', monospace; font-size: 0.85rem;"><code>import requests
 import json
+import base64
 
 API_URL = "http://localhost:8000"
 
-# Stream generation with real-time progress
-response = requests.post(f"{API_URL}/generate", json={
-    "prompt": "A majestic eagle soaring over mountains at sunset",
-    "height": 1024,
-    "width": 1536,
-    "num_frames": 121,
-    "frame_rate": 24,
-    "seed": 42
-}, stream=True)
+# Basic text-to-video generation
+def generate_video(prompt, output_file="output.mp4"):
+    response = requests.post(f"{API_URL}/generate", json={
+        "prompt": prompt,
+        "height": 1024,
+        "width": 1536,
+        "num_frames": 121,
+        "frame_rate": 24,
+        "pipeline_type": "distilled",
+        "seed": 42
+    }, stream=True)
+    
+    job_id = None
+    for line in response.iter_lines():
+        if line and line.startswith(b"data: "):
+            data = json.loads(line[6:])
+            
+            if data["type"] == "init":
+                job_id = data["job_id"]
+                print(f"🚀 Job started: {job_id[:8]}...")
+            elif data["type"] == "info":
+                print(f"📋 Pipeline: {data['pipeline']} | {data['resolution']} | {data['num_frames']} frames")
+            elif data["type"] == "step":
+                print(f"   {data['stage']}: {data['step']}/{data['total']} ({data['percentage']:.1f}%)", end="\r")
+            elif data["type"] == "complete":
+                print(f"\n✅ Generation complete!")
+                video = requests.get(f"{API_URL}/generate/{job_id}/download")
+                with open(output_file, "wb") as f:
+                    f.write(video.content)
+                print(f"💾 Saved to {output_file}")
+            elif data["type"] == "error":
+                print(f"\n❌ Error: {data['message']}")
 
-job_id = None
-for line in response.iter_lines():
-    if line and line.startswith(b"data: "):
-        data = json.loads(line[6:])
-        
-        if data["type"] == "init":
-            job_id = data["job_id"]
-            print(f"Job started: {job_id}")
-        elif data["type"] == "stage":
-            print(f"Stage: {data['message']}")
-        elif data["type"] == "step":
-            print(f"  {data['stage']}: {data['step']}/{data['total']} ({data['percentage']}%)")
-        elif data["type"] == "complete":
-            print("Generation complete!")
-            # Download video
-            video = requests.get(f"{API_URL}/generate/{job_id}/download")
-            with open("output.mp4", "wb") as f:
-                f.write(video.content)
-            print("Video saved to output.mp4")
-        elif data["type"] == "error":
-            print(f"Error: {data['message']}")</code></pre>
+# Image-to-video generation
+def image_to_video(prompt, image_path, output_file="output.mp4"):
+    with open(image_path, "rb") as f:
+        image_base64 = base64.b64encode(f.read()).decode()
+    
+    response = requests.post(f"{API_URL}/generate", json={
+        "prompt": prompt,
+        "images": [{
+            "image_base64": image_base64,
+            "frame_index": 0,
+            "strength": 1.0
+        }],
+        "pipeline_type": "distilled",
+        "num_frames": 121
+    }, stream=True)
+    
+    # ... handle SSE events same as above
+
+# Keyframe interpolation
+def keyframe_interpolation(prompt, start_image, end_image, output_file="output.mp4"):
+    with open(start_image, "rb") as f:
+        start_b64 = base64.b64encode(f.read()).decode()
+    with open(end_image, "rb") as f:
+        end_b64 = base64.b64encode(f.read()).decode()
+    
+    response = requests.post(f"{API_URL}/generate", json={
+        "prompt": prompt,
+        "images": [
+            {"image_base64": start_b64, "frame_index": 0, "strength": 1.0},
+            {"image_base64": end_b64, "frame_index": 120, "strength": 1.0}
+        ],
+        "pipeline_type": "keyframe_interpolation",
+        "num_frames": 121
+    }, stream=True)
+    
+    # ... handle SSE events
+
+if __name__ == "__main__":
+    generate_video("A majestic eagle soaring over mountains at sunset")</code></pre>
+            </div>
+
+            <!-- cURL Examples -->
+            <div class="card">
+                <h2>🔧 cURL Examples</h2>
+                <h4 style="margin-bottom: 0.5rem;">Basic Generation</h4>
+                <pre style="background: var(--bg-dark); padding: 1rem; border-radius: 8px; overflow-x: auto; font-family: 'JetBrains Mono', monospace; font-size: 0.85rem; margin-bottom: 1rem;"><code># Start generation and watch progress
+curl -N http://localhost:8000/generate \
+  -H "Content-Type: application/json" \
+  -d '{"prompt": "A beautiful sunset over the ocean", "num_frames": 65}'</code></pre>
+                
+                <h4 style="margin-bottom: 0.5rem;">Using a Preset</h4>
+                <pre style="background: var(--bg-dark); padding: 1rem; border-radius: 8px; overflow-x: auto; font-family: 'JetBrains Mono', monospace; font-size: 0.85rem; margin-bottom: 1rem;"><code># Use preset as base, override specific settings
+curl -N http://localhost:8000/generate \
+  -H "Content-Type: application/json" \
+  -d '{"preset_name": "default", "prompt": "A cat playing piano", "seed": 123}'</code></pre>
+                
+                <h4 style="margin-bottom: 0.5rem;">Check System Status</h4>
+                <pre style="background: var(--bg-dark); padding: 1rem; border-radius: 8px; overflow-x: auto; font-family: 'JetBrains Mono', monospace; font-size: 0.85rem;"><code>curl http://localhost:8000/health | jq</code></pre>
             </div>
         </div>
 
@@ -2166,34 +2391,27 @@ for line in response.iter_lines():
                 document.getElementById('enableFp8').checked = preset.enable_fp8 !== false;
                 document.getElementById('imageStrength').value = preset.image_strength || 1.0;
                 
-                // Model selection (set value if it exists in the dropdown, otherwise use auto-detect)
+                // Model selection - match preset paths to dropdown options
                 const checkpointSelect = document.getElementById('checkpointSelect');
                 const upsamplerSelect = document.getElementById('upsamplerSelect');
                 const loraSelect = document.getElementById('loraSelect');
                 
                 if (preset.checkpoint_path) {
-                    const exists = Array.from(checkpointSelect.options).some(opt => opt.value === preset.checkpoint_path);
-                    checkpointSelect.value = exists ? preset.checkpoint_path : '';
-                } else {
-                    checkpointSelect.value = '';
+                    checkpointSelect.value = preset.checkpoint_path;
                 }
                 
                 if (preset.spatial_upsampler_path) {
-                    const exists = Array.from(upsamplerSelect.options).some(opt => opt.value === preset.spatial_upsampler_path);
-                    upsamplerSelect.value = exists ? preset.spatial_upsampler_path : '';
-                } else {
-                    upsamplerSelect.value = '';
+                    upsamplerSelect.value = preset.spatial_upsampler_path;
                 }
                 
                 if (preset.distilled_lora_path && preset.distilled_lora_path !== 'None') {
-                    const exists = Array.from(loraSelect.options).some(opt => opt.value === preset.distilled_lora_path);
-                    loraSelect.value = exists ? preset.distilled_lora_path : 'None';
+                    loraSelect.value = preset.distilled_lora_path;
                 } else {
                     loraSelect.value = 'None';
                 }
                 
                 if (preset.gemma_path !== undefined) {
-                    document.getElementById('gemmaPath').value = preset.gemma_path || './models/gemma';
+                    document.getElementById('gemmaPath').value = preset.gemma_path || 'models/gemma';
                 }
                 
                 // Update pipeline-specific UI

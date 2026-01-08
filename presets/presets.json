@@ -1,0 +1,25 @@
+{
+  "default_preset": "default",
+  "presets": {
+    "default": {
+      "name": "default",
+      "description": "Default generation settings for LTX-2 (distilled pipeline)",
+      "created_at": "2024-01-01T00:00:00.000000",
+      "updated_at": "2024-01-01T00:00:00.000000",
+      "pipeline_type": "distilled",
+      "checkpoint_path": "models/checkpoints/ltx-2-19b-distilled-fp8.safetensors",
+      "distilled_lora_path": "None",
+      "spatial_upsampler_path": "models/upsamplers/ltx-2-spatial-upscaler-x2-1.0.safetensors",
+      "gemma_path": "models/gemma",
+      "height": 1024,
+      "width": 1536,
+      "num_frames": 121,
+      "frame_rate": 24.0,
+      "num_inference_steps": 40,
+      "cfg_guidance_scale": 4.0,
+      "seed": -1,
+      "enable_fp8": true,
+      "image_strength": 1.0
+    }
+  }
+}

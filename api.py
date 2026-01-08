@@ -419,7 +419,8 @@ def check_model_status(model_key: str) -> tuple:
     """Check if a model is downloaded. Returns (status, path)."""
     path = get_model_path(model_key)
     if path and path.exists():
-        return "ready", str(path)
+        # Always use forward slashes for cross-platform consistency
+        return "ready", str(path).replace("\\", "/")
     return "missing", None
 
 
