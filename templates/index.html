@@ -838,6 +838,46 @@
         .footer a:hover {
             color: var(--accent-pink);
         }
+
+        /* API Documentation Styles */
+        .api-endpoint {
+            border: 1px solid var(--border-color);
+            border-radius: 10px;
+            overflow: hidden;
+        }
+
+        .api-endpoint .collapsible-header {
+            margin-bottom: 0;
+            border-radius: 0;
+        }
+
+        .api-endpoint .collapsible-content {
+            background: var(--bg-hover);
+            border-top: 1px solid var(--border-color);
+        }
+
+        .api-endpoint code {
+            background: var(--bg-dark);
+            padding: 0.2rem 0.5rem;
+            border-radius: 4px;
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 0.9rem;
+        }
+
+        .api-endpoint pre code {
+            background: transparent;
+            padding: 0;
+        }
+
+        .api-endpoint h4 {
+            color: var(--text-primary);
+            font-size: 0.9rem;
+            font-weight: 600;
+        }
+
+        .api-endpoint ul {
+            line-height: 1.8;
+        }
     </style>
 </head>
 <body>
@@ -859,6 +899,7 @@
             <div class="tab" data-tab="models">📦 Models</div>
             <div class="tab" data-tab="queue">📋 Queue</div>
             <div class="tab" data-tab="presets">💾 Presets</div>
+            <div class="tab" data-tab="api">📚 API</div>
         </div>
 
         <!-- Toast Container -->
@@ -1235,6 +1276,221 @@
             </div>
         </div>
 
+        <!-- API Documentation Tab -->
+        <div class="tab-content" id="api-tab" style="display: none;">
+            <div class="card">
+                <h2>📚 REST API Documentation</h2>
+                <p style="color: var(--text-secondary); margin-bottom: 1rem;">
+                    Full interactive API docs available at <a href="/docs" target="_blank" style="color: var(--accent-purple);">/docs</a> (Swagger UI) 
+                    or <a href="/redoc" target="_blank" style="color: var(--accent-pink);">/redoc</a> (ReDoc)
+                </p>
+                
+                <div style="display: grid; gap: 1rem;">
+                    <!-- Generate Video -->
+                    <div class="api-endpoint">
+                        <div class="collapsible-header" onclick="toggleApiSection('api-generate')">
+                            <div>
+                                <span class="badge" style="background: var(--accent-green); color: white;">POST</span>
+                                <code style="margin-left: 0.5rem;">/generate</code>
+                                <span style="color: var(--text-secondary); margin-left: 0.5rem;">— Submit a video generation job</span>
+                            </div>
+                            <span id="api-generate-arrow">▼</span>
+                        </div>
+                        <div class="collapsible-content" id="api-generate-content">
+                            <p style="color: var(--text-secondary); margin-bottom: 1rem;">
+                                Submit a video generation request. Jobs are queued and processed one at a time. Models are auto-downloaded if needed.
+                            </p>
+                            <h4 style="margin-bottom: 0.5rem;">Request Body</h4>
+                            <pre style="background: var(--bg-dark); padding: 1rem; border-radius: 8px; overflow-x: auto; font-family: 'JetBrains Mono', monospace; font-size: 0.85rem;"><code>{
+  "preset_name": "default",     // Optional: preset to use
+  "prompt": "A sunset...",      // Required if preset has no prompt
+  "negative_prompt": "blurry",  // Optional
+  "height": 1024,               // 256-2048
+  "width": 1536,                // 256-2048
+  "num_frames": 121,            // 9-257 (multiples of 8 + 1)
+  "frame_rate": 24,             // 8-60
+  "num_inference_steps": 40,    // 4-100
+  "cfg_guidance_scale": 4.0,    // 1.0-15.0
+  "seed": -1,                   // -1 for random
+  "input_image_base64": "...",  // Optional: base64 image
+  "image_strength": 1.0         // 0.0-1.0
+}</code></pre>
+                            <h4 style="margin-top: 1rem; margin-bottom: 0.5rem;">Example (curl)</h4>
+                            <pre style="background: var(--bg-dark); padding: 1rem; border-radius: 8px; overflow-x: auto; font-family: 'JetBrains Mono', monospace; font-size: 0.85rem;"><code>curl -X POST http://localhost:8000/generate \
+  -H "Content-Type: application/json" \
+  -d '{"prompt": "A cat walking through a sunlit garden"}'</code></pre>
+                            <h4 style="margin-top: 1rem; margin-bottom: 0.5rem;">Response</h4>
+                            <pre style="background: var(--bg-dark); padding: 1rem; border-radius: 8px; overflow-x: auto; font-family: 'JetBrains Mono', monospace; font-size: 0.85rem;"><code>{
+  "job_id": "abc123...",
+  "status": "queued",
+  "preset_name": "default",
+  "prompt": "A cat walking...",
+  "created_at": "2025-01-08T12:00:00",
+  "position_in_queue": 1
+}</code></pre>
+                        </div>
+                    </div>
+
+                    <!-- Get Job Status -->
+                    <div class="api-endpoint">
+                        <div class="collapsible-header" onclick="toggleApiSection('api-status')">
+                            <div>
+                                <span class="badge" style="background: var(--accent-purple); color: white;">GET</span>
+                                <code style="margin-left: 0.5rem;">/generate/{job_id}</code>
+                                <span style="color: var(--text-secondary); margin-left: 0.5rem;">— Get job status</span>
+                            </div>
+                            <span id="api-status-arrow">▼</span>
+                        </div>
+                        <div class="collapsible-content" id="api-status-content">
+                            <p style="color: var(--text-secondary); margin-bottom: 1rem;">
+                                Check the status of a generation job. Poll this endpoint to track progress.
+                            </p>
+                            <h4 style="margin-bottom: 0.5rem;">Status Values</h4>
+                            <ul style="color: var(--text-secondary); margin-left: 1.5rem;">
+                                <li><code>queued</code> - Waiting in queue</li>
+                                <li><code>processing</code> - Currently generating</li>
+                                <li><code>completed</code> - Video ready for download</li>
+                                <li><code>failed</code> - Generation failed (see error_message)</li>
+                                <li><code>cancelled</code> - Job was cancelled</li>
+                            </ul>
+                            <h4 style="margin-top: 1rem; margin-bottom: 0.5rem;">Example</h4>
+                            <pre style="background: var(--bg-dark); padding: 1rem; border-radius: 8px; overflow-x: auto; font-family: 'JetBrains Mono', monospace; font-size: 0.85rem;"><code>curl http://localhost:8000/generate/abc123-def456</code></pre>
+                        </div>
+                    </div>
+
+                    <!-- Download Video -->
+                    <div class="api-endpoint">
+                        <div class="collapsible-header" onclick="toggleApiSection('api-download')">
+                            <div>
+                                <span class="badge" style="background: var(--accent-purple); color: white;">GET</span>
+                                <code style="margin-left: 0.5rem;">/generate/{job_id}/download</code>
+                                <span style="color: var(--text-secondary); margin-left: 0.5rem;">— Download generated video</span>
+                            </div>
+                            <span id="api-download-arrow">▼</span>
+                        </div>
+                        <div class="collapsible-content" id="api-download-content">
+                            <p style="color: var(--text-secondary); margin-bottom: 1rem;">
+                                Download the generated video file. Only available when status is <code>completed</code>.
+                            </p>
+                            <h4 style="margin-bottom: 0.5rem;">Example</h4>
+                            <pre style="background: var(--bg-dark); padding: 1rem; border-radius: 8px; overflow-x: auto; font-family: 'JetBrains Mono', monospace; font-size: 0.85rem;"><code>curl http://localhost:8000/generate/abc123/download -o video.mp4</code></pre>
+                        </div>
+                    </div>
+
+                    <!-- Presets -->
+                    <div class="api-endpoint">
+                        <div class="collapsible-header" onclick="toggleApiSection('api-presets')">
+                            <div>
+                                <span class="badge" style="background: var(--accent-purple); color: white;">GET</span>
+                                <code style="margin-left: 0.5rem;">/presets</code>
+                                <span style="color: var(--text-secondary); margin-left: 0.5rem;">— List all presets</span>
+                            </div>
+                            <span id="api-presets-arrow">▼</span>
+                        </div>
+                        <div class="collapsible-content" id="api-presets-content">
+                            <p style="color: var(--text-secondary); margin-bottom: 1rem;">
+                                Get all available presets with their settings.
+                            </p>
+                            <h4 style="margin-bottom: 0.5rem;">Related Endpoints</h4>
+                            <ul style="color: var(--text-secondary); margin-left: 1.5rem;">
+                                <li><code>GET /presets/{name}</code> - Get specific preset</li>
+                                <li><code>POST /presets</code> - Create new preset</li>
+                                <li><code>PUT /presets/{name}</code> - Update preset</li>
+                                <li><code>DELETE /presets/{name}</code> - Delete preset</li>
+                                <li><code>POST /presets/{name}/set-default</code> - Set as default</li>
+                            </ul>
+                        </div>
+                    </div>
+
+                    <!-- Models -->
+                    <div class="api-endpoint">
+                        <div class="collapsible-header" onclick="toggleApiSection('api-models')">
+                            <div>
+                                <span class="badge" style="background: var(--accent-purple); color: white;">GET</span>
+                                <code style="margin-left: 0.5rem;">/models</code>
+                                <span style="color: var(--text-secondary); margin-left: 0.5rem;">— List available models</span>
+                            </div>
+                            <span id="api-models-arrow">▼</span>
+                        </div>
+                        <div class="collapsible-content" id="api-models-content">
+                            <p style="color: var(--text-secondary); margin-bottom: 1rem;">
+                                Get all available models with their download status.
+                            </p>
+                            <h4 style="margin-bottom: 0.5rem;">Download a Model</h4>
+                            <pre style="background: var(--bg-dark); padding: 1rem; border-radius: 8px; overflow-x: auto; font-family: 'JetBrains Mono', monospace; font-size: 0.85rem;"><code>curl -X POST http://localhost:8000/models/ltx-2-19b-distilled-fp8/download</code></pre>
+                        </div>
+                    </div>
+
+                    <!-- Health -->
+                    <div class="api-endpoint">
+                        <div class="collapsible-header" onclick="toggleApiSection('api-health')">
+                            <div>
+                                <span class="badge" style="background: var(--accent-purple); color: white;">GET</span>
+                                <code style="margin-left: 0.5rem;">/health</code>
+                                <span style="color: var(--text-secondary); margin-left: 0.5rem;">— System health check</span>
+                            </div>
+                            <span id="api-health-arrow">▼</span>
+                        </div>
+                        <div class="collapsible-content" id="api-health-content">
+                            <p style="color: var(--text-secondary); margin-bottom: 1rem;">
+                                Check system status: CUDA availability, GPU info, queue size, pipeline status.
+                            </p>
+                            <h4 style="margin-bottom: 0.5rem;">Response</h4>
+                            <pre style="background: var(--bg-dark); padding: 1rem; border-radius: 8px; overflow-x: auto; font-family: 'JetBrains Mono', monospace; font-size: 0.85rem;"><code>{
+  "status": "healthy",
+  "cuda_available": true,
+  "gpu_name": "NVIDIA RTX 4090",
+  "gpu_memory_gb": 24.0,
+  "pipeline_loaded": true,
+  "queue_size": 0,
+  "current_job": null
+}</code></pre>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Python Example -->
+            <div class="card">
+                <h2>🐍 Python Example</h2>
+                <pre style="background: var(--bg-dark); padding: 1rem; border-radius: 8px; overflow-x: auto; font-family: 'JetBrains Mono', monospace; font-size: 0.85rem;"><code>import requests
+import time
+
+API_URL = "http://localhost:8000"
+
+# Submit generation job
+response = requests.post(f"{API_URL}/generate", json={
+    "prompt": "A majestic eagle soaring over mountains at sunset",
+    "height": 1024,
+    "width": 1536,
+    "num_frames": 121,
+    "frame_rate": 24,
+    "seed": 42
+})
+job = response.json()
+job_id = job["job_id"]
+print(f"Job submitted: {job_id}")
+
+# Poll for completion
+while True:
+    status = requests.get(f"{API_URL}/generate/{job_id}").json()
+    print(f"Status: {status['status']}")
+    
+    if status["status"] == "completed":
+        # Download video
+        video = requests.get(f"{API_URL}/generate/{job_id}/download")
+        with open("output.mp4", "wb") as f:
+            f.write(video.content)
+        print("Video saved to output.mp4")
+        break
+    elif status["status"] == "failed":
+        print(f"Error: {status['error_message']}")
+        break
+    
+    time.sleep(5)  # Poll every 5 seconds</code></pre>
+            </div>
+        </div>
+
         <!-- Footer -->
         <footer class="footer">
             <p>Built with ❤️ for the AI video generation community</p>
@@ -1264,6 +1520,14 @@
         function toggleAdvancedSettings() {
             const content = document.getElementById('advancedSettingsContent');
             const arrow = document.getElementById('advancedSettingsArrow');
+            content.classList.toggle('show');
+            arrow.textContent = content.classList.contains('show') ? '▲' : '▼';
+        }
+
+        // Toggle API Section
+        function toggleApiSection(sectionId) {
+            const content = document.getElementById(sectionId + '-content');
+            const arrow = document.getElementById(sectionId + '-arrow');
             content.classList.toggle('show');
             arrow.textContent = content.classList.contains('show') ? '▲' : '▼';
         }
