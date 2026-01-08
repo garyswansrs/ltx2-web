@@ -139,4 +139,4 @@ echo
 echo "Default setup: Distilled pipeline (fast 8-step inference)"
 echo
 
-python app.py
+python api.py

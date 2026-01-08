@@ -331,6 +331,11 @@ class PresetResponse(BaseModel):
     seed: int
     enable_fp8: bool
     image_strength: float
+    # Model paths
+    checkpoint_path: Optional[str] = None
+    spatial_upsampler_path: Optional[str] = None
+    distilled_lora_path: Optional[str] = None
+    gemma_path: Optional[str] = None
 
 
 class HealthResponse(BaseModel):
@@ -1067,6 +1072,10 @@ async def list_presets():
                 seed=preset.seed,
                 enable_fp8=preset.enable_fp8,
                 image_strength=preset.image_strength,
+                checkpoint_path=preset.checkpoint_path,
+                spatial_upsampler_path=preset.spatial_upsampler_path,
+                distilled_lora_path=preset.distilled_lora_path,
+                gemma_path=preset.gemma_path,
             ))
     
     return presets
@@ -1099,6 +1108,10 @@ async def get_preset(preset_name: str):
         seed=preset.seed,
         enable_fp8=preset.enable_fp8,
         image_strength=preset.image_strength,
+        checkpoint_path=preset.checkpoint_path,
+        spatial_upsampler_path=preset.spatial_upsampler_path,
+        distilled_lora_path=preset.distilled_lora_path,
+        gemma_path=preset.gemma_path,
     )
 
 
@@ -1152,6 +1165,10 @@ async def create_preset(preset_data: PresetCreate):
         seed=preset.seed,
         enable_fp8=preset.enable_fp8,
         image_strength=preset.image_strength,
+        checkpoint_path=preset.checkpoint_path,
+        spatial_upsampler_path=preset.spatial_upsampler_path,
+        distilled_lora_path=preset.distilled_lora_path,
+        gemma_path=preset.gemma_path,
     )
 
 
@@ -1207,6 +1224,10 @@ async def update_preset(preset_name: str, preset_data: PresetCreate):
         seed=preset.seed,
         enable_fp8=preset.enable_fp8,
         image_strength=preset.image_strength,
+        checkpoint_path=preset.checkpoint_path,
+        spatial_upsampler_path=preset.spatial_upsampler_path,
+        distilled_lora_path=preset.distilled_lora_path,
+        gemma_path=preset.gemma_path,
     )
 
 
